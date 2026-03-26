@@ -1,6 +1,6 @@
 """
 Aurum Strategy — agent 可以修改此文件的所有内容
-当前策略：动量策略 + 长期趋势过滤 + 趋势斜率确认 + 波动率自适应阈值
+当前策略：动量策略 + 长期趋势过滤 + 趋势斜率确认 + 波动率自适应阈值 + 波动率上限过滤
 """
 import pandas as pd
 import numpy as np
@@ -10,6 +10,7 @@ LOOKBACK = 20           # 动量回望期（天）
 ATR_PERIOD = 20         # ATR 计算周期
 ATR_MULTIPLIER = 1.5    # ATR 阈值乘数（动态入场阈值 = ATR * multiplier / close）
 MA_SLOPE_PERIOD = 20    # 均线斜率确认周期（20 日）
+VOLATILITY_CAP = 1.5    # 波动率比率上限（当前 ATR / 60 日平均 ATR）
 
 # ============ 信号逻辑区 ============
 def generate_signals(df: pd.DataFrame) -> pd.Series:
@@ -44,9 +45,16 @@ def generate_signals(df: pd.DataFrame) -> pd.Series:
     # 波动率自适应入场阈值：ATR * multiplier / 昨日收盘价
     # 这样阈值会随市场波动率动态调整
     dynamic_threshold = (atr * ATR_MULTIPLIER) / close_prev
+    
+    # 新增：波动率上限过滤
+    # 计算当前 ATR 相对于 60 日平均 ATR 的比率
+    atr_mean_60 = atr.rolling(60).mean()
+    volatility_ratio = atr / atr_mean_60
+    # 只在波动率不过度极端时交易（避免高波动反转风险）
+    volatility_filter = (volatility_ratio < VOLATILITY_CAP) | volatility_ratio.isna()
 
-    # 动量为正且超过动态阈值 且 处于长期上涨趋势 - 做多
+    # 动量为正且超过动态阈值 且 处于长期上涨趋势 且 波动率不过度极端 - 做多
     # 使用 fillna(0) 处理初始数据不足产生的 NaN
-    signal = ((momentum > dynamic_threshold) & trend_filter).fillna(0).astype(int)
+    signal = ((momentum > dynamic_threshold) & trend_filter & volatility_filter).fillna(0).astype(int)
 
     return signal
