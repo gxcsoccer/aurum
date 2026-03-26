@@ -1,6 +1,6 @@
 """
 Aurum Strategy — agent 可以修改此文件的所有内容
-当前策略：双动量确认退出策略（基线 v7 - 放宽短期退出阈值至 -0.5%）
+当前策略：双动量确认退出策略（基线 v8 - 入场阈值微调至 0.1%）
 """
 import pandas as pd
 import numpy as np
@@ -8,9 +8,9 @@ import numpy as np
 # ============ 参数区 ============
 LOOKBACK_LONG = 10       # 长期动量回望期（天）
 LOOKBACK_SHORT = 5       # 短期动量回望期（天）
-ENTRY_THRESH = 0.0       # 入场阈值（10 日收益率 > 0%）
+ENTRY_THRESH = 0.001     # 入场阈值（10 日收益率 > 0.1%，原为 0%）
 EXIT_THRESH_LONG = -0.01 # 长期动量退出阈值（10 日收益率 < -1%）
-EXIT_THRESH_SHORT = -0.005  # 短期动量退出阈值（5 日收益率 < -0.5%，原为 0%）
+EXIT_THRESH_SHORT = -0.005  # 短期动量退出阈值（5 日收益率 < -0.5%）
 
 # ============ 信号逻辑区 ============
 def generate_signals(df: pd.DataFrame) -> pd.Series:
