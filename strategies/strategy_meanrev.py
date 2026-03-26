@@ -8,10 +8,10 @@ import numpy as np
 # ============ 参数区 ============
 RSI_PERIOD = 14       # RSI 计算周期
 RSI_OVERSOLD = 30     # 超卖阈值
-RSI_EXIT = 50         # 退出阈值（回归到均值）
+RSI_EXIT = 45         # 退出阈值（从 50 降低到 45，允许部分回归即退出）
 BB_PERIOD = 20        # 布林带周期
 BB_STD = 2.0          # 布林带标准差倍数
-MAX_HOLD_DAYS = 15    # 最大持仓天数（从 10 天延长至 15 天）
+MAX_HOLD_DAYS = 15    # 最大持仓天数
 PROFIT_TARGET = 0.03  # 止盈目标（从入场价反弹 3%）
 
 # ============ 信号逻辑区 ============
@@ -38,7 +38,7 @@ def generate_signals(df: pd.DataFrame) -> pd.Series:
     # 入场条件：RSI 超卖 OR 价格跌破布林带下轨（均值回归信号）
     entry_condition = (rsi < RSI_OVERSOLD) | (df['close'] < bb_lower)
     
-    # 退出条件：RSI 回归到均值以上
+    # 退出条件：RSI 回归到均值以上（从 50 降低到 45）
     exit_condition = rsi > RSI_EXIT
     
     # 状态机逻辑：持仓状态保持
