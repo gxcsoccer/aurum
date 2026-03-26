@@ -43,8 +43,12 @@ def generate_signals(df: pd.DataFrame) -> pd.Series:
     cumulative_drop = price_change.rolling(DROP_PERIOD).sum().shift(1)
     drop_condition = cumulative_drop < -DROP_THRESHOLD
     
+    # 新增：当日收盘价低于前一日收盘价（确认下跌趋势）
+    price_decline = df['close'] < df['close'].shift(1)
+    
     # 入场条件：RSI 超卖 OR 价格跌破布林带下轨 OR 3 日累计跌幅>5%（均值回归信号）
-    entry_condition = (rsi < RSI_OVERSOLD) | (df['close'] < bb_lower) | drop_condition
+    # 新增：必须同时满足当日价格下跌确认
+    entry_condition = ((rsi < RSI_OVERSOLD) | (df['close'] < bb_lower) | drop_condition) & price_decline
     
     # 退出条件：RSI 回归到均值以上（从 50 降低到 45）
     exit_condition = rsi > RSI_EXIT
