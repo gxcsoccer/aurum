@@ -13,7 +13,7 @@ BB_PERIOD = 20        # 布林带周期
 BB_STD = 2.0          # 布林带标准差倍数
 MAX_HOLD_DAYS = 15    # 最大持仓天数
 MIN_HOLD_DAYS = 3     # 最小持仓天数（从 2 延长至 3，让回归更充分）
-PROFIT_TARGET = 0.03  # 止盈目标（从入场价反弹 3%）
+PROFIT_TARGET = 0.035  # 止盈目标（从 3% 提高到 3.5%，让盈利更充分）
 DROP_PERIOD = 3       # 累计跌幅计算周期
 DROP_THRESHOLD = 0.05 # 累计跌幅阈值（5%）
 
