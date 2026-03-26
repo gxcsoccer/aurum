@@ -10,7 +10,7 @@ LOOKBACK = 20           # 动量回望期（天）
 ATR_PERIOD = 20         # ATR 计算周期
 ATR_MULTIPLIER = 1.5    # ATR 阈值乘数（动态入场阈值 = ATR * multiplier / close）
 MA_SLOPE_PERIOD = 20    # 均线斜率确认周期（20 日）
-VOLATILITY_CAP = 1.5    # 波动率比率上限（当前 ATR / 60 日平均 ATR）
+VOLATILITY_CAP = 1.3    # 波动率比率上限（当前 ATR / 60 日平均 ATR）
 MIN_MOMENTUM = 0.01     # 最小绝对动量阈值（1%），确保信号有足够的价格运动强度
 
 # ============ 信号逻辑区 ============
