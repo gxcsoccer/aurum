@@ -7,7 +7,7 @@ import numpy as np
 
 # ============ 参数区 ============
 RSI_PERIOD = 14       # RSI 计算周期
-RSI_OVERSOLD = 30     # 超卖阈值
+RSI_OVERSOLD = 35     # 超卖阈值（从 30 提高到 35，增加入场信号）
 RSI_EXIT = 45         # 退出阈值（从 50 降低到 45，允许部分回归即退出）
 BB_PERIOD = 20        # 布林带周期
 BB_STD = 2.0          # 布林带标准差倍数
