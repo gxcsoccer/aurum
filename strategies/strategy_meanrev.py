@@ -12,6 +12,7 @@ RSI_EXIT = 50         # 退出阈值（回归到均值）
 BB_PERIOD = 20        # 布林带周期
 BB_STD = 2.0          # 布林带标准差倍数
 MAX_HOLD_DAYS = 10    # 最大持仓天数
+PROFIT_TARGET = 0.03  # 止盈目标（从入场价反弹 3%）
 
 # ============ 信号逻辑区 ============
 def generate_signals(df: pd.DataFrame) -> pd.Series:
@@ -43,6 +44,7 @@ def generate_signals(df: pd.DataFrame) -> pd.Series:
     # 状态机逻辑：持仓状态保持
     in_position = False
     hold_days = 0
+    entry_price = 0.0
     
     for i in range(n):
         if not in_position:
@@ -50,14 +52,21 @@ def generate_signals(df: pd.DataFrame) -> pd.Series:
             if entry_condition.iloc[i]:
                 in_position = True
                 hold_days = 0
+                entry_price = df['close'].iloc[i]
                 signal.iloc[i] = 1
         else:
             # 持仓中
             hold_days += 1
-            # 退出条件：RSI 回归 或 达到最大持仓天数
-            if exit_condition.iloc[i] or (hold_days >= MAX_HOLD_DAYS):
+            current_price = df['close'].iloc[i]
+            
+            # 计算当前盈利比例
+            profit_pct = (current_price - entry_price) / entry_price
+            
+            # 退出条件：RSI 回归 或 达到最大持仓天数 或 达到止盈目标
+            if exit_condition.iloc[i] or (hold_days >= MAX_HOLD_DAYS) or (profit_pct >= PROFIT_TARGET):
                 in_position = False
                 hold_days = 0
+                entry_price = 0.0
                 signal.iloc[i] = 0
             else:
                 signal.iloc[i] = 1
