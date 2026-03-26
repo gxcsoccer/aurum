@@ -1,6 +1,6 @@
 """
 Aurum Strategy — agent 可以修改此文件的所有内容
-当前策略：双动量确认退出策略（基线 v10 - 入场动量加速确认 + 成交量过滤）
+当前策略：双动量确认退出策略（基线 v11 - 入场动量加速确认 + 成交量过滤 + 最低持仓期）
 """
 import pandas as pd
 import numpy as np
@@ -13,6 +13,7 @@ EXIT_THRESH_LONG = -0.01 # 长期动量退出阈值（10 日收益率 < -1%）
 EXIT_THRESH_SHORT = -0.005  # 短期动量退出阈值（5 日收益率 < -0.5%）
 MOMENTUM_ACCEL_LOOKBACK = 3  # 动量加速确认回望期（天）
 VOLUME_LOOKBACK = 20     # 成交量均线回望期（天）
+MIN_HOLD_DAYS = 3        # 最低持仓天数（入场后至少持有 3 天才允许退出）
 
 # ============ 信号逻辑区 ============
 def generate_signals(df: pd.DataFrame) -> pd.Series:
@@ -38,6 +39,7 @@ def generate_signals(df: pd.DataFrame) -> pd.Series:
     
     # 当前持仓状态（用于实现进出场不对称）
     position = 0
+    entry_day = -1  # 记录入场日期索引
     
     for i in range(len(df)):
         if position == 0:
@@ -46,10 +48,16 @@ def generate_signals(df: pd.DataFrame) -> pd.Series:
                 momentum_long.iloc[i] > momentum_long_prev.iloc[i] and
                 volume_confirm.iloc[i]):
                 position = 1
+                entry_day = i
         else:
-            # 持仓时：需长期动量跌破阈值 且 短期动量为负 才退出（双重确认）
-            if momentum_long.iloc[i] < EXIT_THRESH_LONG and momentum_short.iloc[i] < EXIT_THRESH_SHORT:
-                position = 0
+            # 持仓时：检查是否满足最低持仓期
+            days_held = i - entry_day
+            if days_held >= MIN_HOLD_DAYS:
+                # 满足最低持仓期后：需长期动量跌破阈值 且 短期动量为负 才退出（双重确认）
+                if momentum_long.iloc[i] < EXIT_THRESH_LONG and momentum_short.iloc[i] < EXIT_THRESH_SHORT:
+                    position = 0
+                    entry_day = -1
+            # 如果未达到最低持仓期，强制保持持仓
         
         signal.iloc[i] = position
 
