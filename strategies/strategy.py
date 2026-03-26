@@ -1,13 +1,13 @@
 """
 Aurum Strategy — agent 可以修改此文件的所有内容
-当前策略：简单动量策略（基线 v3）
+当前策略：简单动量策略（基线 v4 - 短期动量）
 """
 import pandas as pd
 import numpy as np
 
 # ============ 参数区 ============
-LOOKBACK = 20        # 动量回望期（天）
-ENTRY_THRESH = 0.0   # 入场阈值（20 日收益率 > 0%）
+LOOKBACK = 10        # 动量回望期（天）
+ENTRY_THRESH = 0.0   # 入场阈值（10 日收益率 > 0%）
 
 # ============ 信号逻辑区 ============
 def generate_signals(df: pd.DataFrame) -> pd.Series:
