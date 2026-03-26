@@ -1,14 +1,15 @@
 """
 Aurum Strategy — agent 可以修改此文件的所有内容
-当前策略：动量策略 + 长期趋势过滤 + 趋势斜率确认
+当前策略：动量策略 + 长期趋势过滤 + 趋势斜率确认 + 波动率自适应阈值
 """
 import pandas as pd
 import numpy as np
 
 # ============ 参数区 ============
-LOOKBACK = 20        # 动量回望期（天）
-ENTRY_THRESH = 0.02  # 入场阈值（20 日收益率 > 2%）
-MA_SLOPE_PERIOD = 20 # 均线斜率确认周期（20 日）
+LOOKBACK = 20           # 动量回望期（天）
+ATR_PERIOD = 20         # ATR 计算周期
+ATR_MULTIPLIER = 1.5    # ATR 阈值乘数（动态入场阈值 = ATR * multiplier / close）
+MA_SLOPE_PERIOD = 20    # 均线斜率确认周期（20 日）
 
 # ============ 信号逻辑区 ============
 def generate_signals(df: pd.DataFrame) -> pd.Series:
@@ -29,8 +30,23 @@ def generate_signals(df: pd.DataFrame) -> pd.Series:
     # 趋势过滤：当前收盘价高于 200 日均线 且 均线处于上升趋势
     trend_filter = (df['close'] > trend_ma) & trend_slope
 
-    # 动量为正且超过阈值 且 处于长期上涨趋势 - 做多
+    # 计算 ATR 作为波动率指标（使用 shift(1) 确保无前视偏差）
+    high = df['high'].shift(1)
+    low = df['low'].shift(1)
+    close_prev = df['close'].shift(1)
+    
+    tr1 = high - low
+    tr2 = abs(high - close_prev)
+    tr3 = abs(low - close_prev)
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = tr.rolling(ATR_PERIOD).mean().shift(1)
+    
+    # 波动率自适应入场阈值：ATR * multiplier / 昨日收盘价
+    # 这样阈值会随市场波动率动态调整
+    dynamic_threshold = (atr * ATR_MULTIPLIER) / close_prev
+
+    # 动量为正且超过动态阈值 且 处于长期上涨趋势 - 做多
     # 使用 fillna(0) 处理初始数据不足产生的 NaN
-    signal = ((momentum > ENTRY_THRESH) & trend_filter).fillna(0).astype(int)
+    signal = ((momentum > dynamic_threshold) & trend_filter).fillna(0).astype(int)
 
     return signal
