@@ -13,6 +13,8 @@ BB_PERIOD = 20        # 布林带周期
 BB_STD = 2.0          # 布林带标准差倍数
 MAX_HOLD_DAYS = 15    # 最大持仓天数
 PROFIT_TARGET = 0.03  # 止盈目标（从入场价反弹 3%）
+DROP_PERIOD = 3       # 累计跌幅计算周期
+DROP_THRESHOLD = 0.05 # 累计跌幅阈值（5%）
 
 # ============ 信号逻辑区 ============
 def generate_signals(df: pd.DataFrame) -> pd.Series:
@@ -35,8 +37,13 @@ def generate_signals(df: pd.DataFrame) -> pd.Series:
     bb_std = df['close'].rolling(BB_PERIOD).std().shift(1)
     bb_lower = bb_mid - BB_STD * bb_std
     
-    # 入场条件：RSI 超卖 OR 价格跌破布林带下轨（均值回归信号）
-    entry_condition = (rsi < RSI_OVERSOLD) | (df['close'] < bb_lower)
+    # 计算 3 日累计跌幅（shift(1) 确保无前视偏差）
+    price_change = df['close'].pct_change()
+    cumulative_drop = price_change.rolling(DROP_PERIOD).sum().shift(1)
+    drop_condition = cumulative_drop < -DROP_THRESHOLD
+    
+    # 入场条件：RSI 超卖 OR 价格跌破布林带下轨 OR 3 日累计跌幅>5%（均值回归信号）
+    entry_condition = (rsi < RSI_OVERSOLD) | (df['close'] < bb_lower) | drop_condition
     
     # 退出条件：RSI 回归到均值以上（从 50 降低到 45）
     exit_condition = rsi > RSI_EXIT
