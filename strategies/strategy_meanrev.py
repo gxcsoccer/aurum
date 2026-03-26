@@ -16,6 +16,7 @@ MIN_HOLD_DAYS = 3     # 最小持仓天数（从 2 延长至 3，让回归更充
 PROFIT_TARGET = 0.035  # 止盈目标（从 3% 提高到 3.5%，让盈利更充分）
 DROP_PERIOD = 3       # 累计跌幅计算周期
 DROP_THRESHOLD = 0.05 # 累计跌幅阈值（5%）
+RAPID_REBOUND_THRESHOLD = 0.04  # 单日快速反弹退出阈值（4%）
 
 # ============ 信号逻辑区 ============
 def generate_signals(df: pd.DataFrame) -> pd.Series:
@@ -46,12 +47,18 @@ def generate_signals(df: pd.DataFrame) -> pd.Series:
     # 当日收盘价低于前一日收盘价（确认下跌趋势）
     price_decline = df['close'] < df['close'].shift(1)
     
+    # 单日涨幅（用于快速反弹退出）
+    daily_return = df['close'].pct_change()
+    
     # 入场条件：RSI 超卖 OR 价格跌破布林带下轨 OR 3 日累计跌幅>5%（均值回归信号）
     # 必须同时满足当日价格下跌确认
     entry_condition = ((rsi < RSI_OVERSOLD) | (df['close'] < bb_lower) | drop_condition) & price_decline
     
     # 退出条件：RSI 回归到均值以上（从 50 降低到 45）
     exit_condition = rsi > RSI_EXIT
+    
+    # 快速反弹退出条件（单日涨幅超过阈值）
+    rapid_rebound_condition = daily_return > RAPID_REBOUND_THRESHOLD
     
     # 状态机逻辑：持仓状态保持
     in_position = False
@@ -74,10 +81,18 @@ def generate_signals(df: pd.DataFrame) -> pd.Series:
             # 计算当前盈利比例
             profit_pct = (current_price - entry_price) / entry_price
             
-            # 退出条件：RSI 回归 或 达到最大持仓天数 或 达到止盈目标
-            # 必须满足最小持仓天数才能退出（避免过早退出）
-            can_exit = hold_days >= MIN_HOLD_DAYS
-            if can_exit and (exit_condition.iloc[i] or (hold_days >= MAX_HOLD_DAYS) or (profit_pct >= PROFIT_TARGET)):
+            # 退出条件：RSI 回归 或 达到最大持仓天数 或 达到止盈目标 或 单日快速反弹
+            # 必须满足最小持仓天数才能退出（避免过早退出），但快速反弹可以例外
+            can_exit_normal = hold_days >= MIN_HOLD_DAYS
+            can_exit_rapid = hold_days >= 2  # 快速反弹允许更早退出（至少 2 天）
+            
+            if can_exit_normal and (exit_condition.iloc[i] or (hold_days >= MAX_HOLD_DAYS) or (profit_pct >= PROFIT_TARGET)):
+                in_position = False
+                hold_days = 0
+                entry_price = 0.0
+                signal.iloc[i] = 0
+            elif can_exit_rapid and rapid_rebound_condition.iloc[i]:
+                # 快速反弹退出：单日涨幅超过阈值，可以提前退出
                 in_position = False
                 hold_days = 0
                 entry_price = 0.0
