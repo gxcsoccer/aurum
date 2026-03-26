@@ -1,6 +1,6 @@
 """
 Aurum Strategy — agent 可以修改此文件的所有内容
-当前策略：双动量确认退出策略（基线 v9 - 入场动量加速确认）
+当前策略：双动量确认退出策略（基线 v10 - 入场动量加速确认 + 成交量过滤）
 """
 import pandas as pd
 import numpy as np
@@ -12,6 +12,7 @@ ENTRY_THRESH = 0.001     # 入场阈值（10 日收益率 > 0.1%）
 EXIT_THRESH_LONG = -0.01 # 长期动量退出阈值（10 日收益率 < -1%）
 EXIT_THRESH_SHORT = -0.005  # 短期动量退出阈值（5 日收益率 < -0.5%）
 MOMENTUM_ACCEL_LOOKBACK = 3  # 动量加速确认回望期（天）
+VOLUME_LOOKBACK = 20     # 成交量均线回望期（天）
 
 # ============ 信号逻辑区 ============
 def generate_signals(df: pd.DataFrame) -> pd.Series:
@@ -27,6 +28,10 @@ def generate_signals(df: pd.DataFrame) -> pd.Series:
     
     # 动量加速确认（当前动量 > 3 日前动量，确保趋势在强化）
     momentum_long_prev = momentum_long.shift(MOMENTUM_ACCEL_LOOKBACK)
+    
+    # 成交量确认（当日成交量 > 20 日均量，shift(1) 确保无前视偏差）
+    volume_ma = df['volume'].rolling(VOLUME_LOOKBACK).mean().shift(1)
+    volume_confirm = df['volume'].shift(1) > volume_ma
 
     # 初始化信号
     signal = pd.Series(0, index=df.index)
@@ -36,8 +41,10 @@ def generate_signals(df: pd.DataFrame) -> pd.Series:
     
     for i in range(len(df)):
         if position == 0:
-            # 空仓时：长期动量超过入场阈值 且 动量处于加速状态 才入场
-            if momentum_long.iloc[i] > ENTRY_THRESH and momentum_long.iloc[i] > momentum_long_prev.iloc[i]:
+            # 空仓时：长期动量超过入场阈值 且 动量处于加速状态 且 成交量确认 才入场
+            if (momentum_long.iloc[i] > ENTRY_THRESH and 
+                momentum_long.iloc[i] > momentum_long_prev.iloc[i] and
+                volume_confirm.iloc[i]):
                 position = 1
         else:
             # 持仓时：需长期动量跌破阈值 且 短期动量为负 才退出（双重确认）
