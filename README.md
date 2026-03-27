@@ -1,5 +1,7 @@
 # Aurum
 
+[中文版](README.zh-CN.md)
+
 Self-evolving quantitative investment system for individual investors.
 
 Inspired by [Karpathy's autoresearch](https://github.com/karpathy/autoresearch) — LLM agents autonomously iterate strategy code through a greedy hill-climbing loop, while humans steer direction via scoring functions and research prompts.
