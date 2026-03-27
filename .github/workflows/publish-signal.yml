@@ -1,0 +1,42 @@
+name: Publish Monthly Signal
+
+on:
+  schedule:
+    # 每月第 1 个周六 UTC 14:00（美东周六上午，为下周一准备）
+    - cron: "0 14 1-7 * 6"
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Cache market data
+        uses: actions/cache@v4
+        with:
+          path: data_cache/
+          key: market-data-${{ github.run_id }}
+          restore-keys: market-data-
+
+      - name: Install dependencies
+        run: pip install -e .
+
+      - name: Publish signal
+        env:
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python publish_signal.py
+
+      - name: Upload signal log
+        uses: actions/upload-artifact@v4
+        with:
+          name: signal-${{ github.run_id }}
+          path: data_cache/
+          retention-days: 90

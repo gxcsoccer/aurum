@@ -1,0 +1,63 @@
+name: Quarterly Evolution
+
+on:
+  schedule:
+    # 每季度第一个周六 UTC 06:00
+    - cron: "0 6 1-7 1,4,7,10 6"
+  workflow_dispatch:
+    inputs:
+      iterations:
+        description: "Number of evolution iterations"
+        default: "50"
+
+jobs:
+  evolve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Cache market data
+        uses: actions/cache@v4
+        with:
+          path: data_cache/
+          key: market-data-${{ github.run_id }}
+          restore-keys: market-data-
+
+      - name: Install dependencies
+        run: pip install -e .
+
+      - name: Run evolution
+        env:
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+        run: |
+          python loop.py -n ${{ inputs.iterations || '50' }}
+          python validate.py
+
+      - name: Create PR with evolved strategy
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH="evolve/$(date +%Y-%m-%d)"
+          git checkout -b "$BRANCH"
+          git config user.name "Aurum Bot"
+          git config user.email "aurum@github-actions"
+          git add strategies/strategy.py experiments/
+          git diff --cached --quiet && echo "No changes" && exit 0
+          git commit -m "evolve: auto-evolution $(date +%Y-%m-%d)"
+          git push origin "$BRANCH"
+          gh pr create \
+            --title "Evolve: $(date +%Y-%m-%d) strategy update" \
+            --body "## Auto Evolution Results
+
+          This PR was created by the quarterly evolution workflow.
+          **Please review the strategy changes before merging.**
+
+          - Check strategies/strategy.py for the evolved strategy logic
+          - Check experiments/ for evolution history
+          - Run python validate.py locally to verify holdout performance"
