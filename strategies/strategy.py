@@ -8,6 +8,8 @@ CASH = "SHY"            # 现金等价资产
 OFFENSIVE = ["SPY", "QQQ", "EFA", "EEM"]   # 进攻型资产
 DEFENSIVE = ["TLT", "GLD", "SHY"]          # 防御型资产
 MOMENTUM_THRESHOLD = -0.05  # 动量严重程度阈值（-5%），低于此值才切换防御
+QQQ_VOL_PENALTY_RATIO = 1.3  # QQQ 波动率相对于 SPY 的惩罚阈值
+QQQ_VOL_PENALTY_FACTOR = 0.7  # QQQ 评分惩罚系数（当波动率过高时）
 
 # ============ 信号逻辑区 ============
 def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
@@ -15,13 +17,14 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
     输入：prices dict，key=资产名，value=OHLCV DataFrame
     输出：Series，index=日期，values=持有的资产名 (str)
 
-    变异：添加动量严重程度过滤
+    变异：添加 QQQ 波动率惩罚
     1. 计算每个资产的动量和波动率
     2. 评分 = 动量 / 波动率
-    3. 在进攻型资产中选评分最高的
-    4. 如果最强资产的原始动量 > -5% → 持有它（容忍小幅负动量）
-    5. 否则 → 切换到防御型资产中评分最高的
-    6. 每月初再平衡一次
+    3. 当 QQQ 波动率 > 1.3x SPY 波动率时，对 QQQ 评分施加 30% 惩罚
+    4. 在进攻型资产中选评分最高的
+    5. 如果最强资产的原始动量 > -5% → 持有它（容忍小幅负动量）
+    6. 否则 → 切换到防御型资产中评分最高的
+    7. 每月初再平衡一次
     """
     # 获取公共日期
     all_dates = None
@@ -62,6 +65,7 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
         # 获取当日数据
         row_score = score_df.loc[date].dropna()
         row_mom = mom_df.loc[date].dropna()
+        row_vol = vol_df.loc[date].dropna()
         
         if len(row_score) == 0:
             signals.iloc[i] = current_asset
@@ -69,6 +73,14 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
 
         # 选进攻型资产中评分最高的
         off_score = {k: row_score[k] for k in OFFENSIVE if k in row_score}
+        
+        # QQQ 波动率惩罚：当 QQQ 波动率 > 1.3x SPY 波动率时，降低其评分
+        if "QQQ" in off_score and "SPY" in row_vol:
+            qqq_vol = row_vol.get("QQQ", 0)
+            spy_vol = row_vol.get("SPY", 0)
+            if spy_vol > 0 and qqq_vol > spy_vol * QQQ_VOL_PENALTY_RATIO:
+                off_score["QQQ"] = off_score["QQQ"] * QQQ_VOL_PENALTY_FACTOR
+        
         if off_score:
             best_off = max(off_score, key=off_score.get)
             best_off_mom = row_mom.get(best_off, -1)
