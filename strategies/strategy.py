@@ -1,12 +1,13 @@
 """
 Aurum 多资产轮动策略 — agent 可以修改此文件的所有内容
-当前策略：改进的 Dual Momentum（带正动量阈值）
+当前策略：波动率调整动量（Volatility-Adjusted Momentum）
 """
 import pandas as pd
 import numpy as np
 
 # ============ 参数区 ============
 LOOKBACK = 252          # 动量回望期（~12 个月）
+VOL_LOOKBACK = 126      # 波动率计算期（~6 个月）
 MOM_THRESHOLD = 0.01    # 进攻型资产需要的最小正动量阈值（1%）
 CASH = "SHY"            # 现金等价资产
 OFFENSIVE = ["SPY", "QQQ", "EFA", "EEM"]   # 进攻型资产
@@ -18,11 +19,13 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
     输入：prices dict，key=资产名，value=OHLCV DataFrame
     输出：Series，index=日期，values=持有的资产名 (str)
 
-    改进的 Dual Momentum：
-    1. 在进攻型资产中选动量最强的
-    2. 如果最强的动量 > 阈值 (1%) → 持有它
-    3. 否则 → 切换到现金 (SHY)
-    4. 每月初再平衡一次
+    波动率调整动量策略：
+    1. 计算每个资产的动量（12 个月）
+    2. 计算每个资产的波动率（6 个月）
+    3. 使用动量/波动率作为评分指标
+    4. 如果最强进攻型资产评分 > 阈值 → 持有它
+    5. 否则 → 切换到现金 (SHY)
+    6. 每月初再平衡一次
     """
     # 获取公共日期
     all_dates = None
@@ -34,13 +37,23 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
             all_dates = all_dates.intersection(idx)
     all_dates = all_dates.sort_values()
 
-    # 计算每个资产的动量（shift(1) 防止前视偏差）
+    # 计算每个资产的动量和波动率（shift(1) 防止前视偏差）
     momentums = {}
+    volatilities = {}
     for name, df in prices.items():
         close = df["close"].reindex(all_dates)
+        # 动量：12 个月收益率
         momentums[name] = close.pct_change(LOOKBACK).shift(1)
+        # 波动率：6 个月年化波动率
+        returns = close.pct_change().shift(1)
+        volatilities[name] = returns.rolling(VOL_LOOKBACK).std() * np.sqrt(252)
 
     mom_df = pd.DataFrame(momentums).reindex(all_dates)
+    vol_df = pd.DataFrame(volatilities).reindex(all_dates)
+
+    # 计算波动率调整动量评分
+    # 避免除以零，添加小值
+    score_df = mom_df / (vol_df + 0.0001)
 
     # 生成信号
     signals = pd.Series(CASH, index=all_dates)
@@ -52,15 +65,20 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
             signals.iloc[i] = current_asset
             continue
 
-        row = mom_df.loc[date].dropna()
-        if len(row) == 0:
+        row_score = score_df.loc[date].dropna()
+        row_mom = mom_df.loc[date].dropna()
+        
+        if len(row_score) == 0:
             signals.iloc[i] = current_asset
             continue
 
-        # 选进攻型资产中动量最强的
-        off_mom = {k: row[k] for k in OFFENSIVE if k in row}
-        if off_mom:
-            best_off = max(off_mom, key=off_mom.get)
+        # 选进攻型资产中波动率调整动量最强的
+        off_score = {k: row_score[k] for k in OFFENSIVE if k in row_score}
+        off_mom = {k: row_mom[k] for k in OFFENSIVE if k in row_mom}
+        
+        if off_score and off_mom:
+            # 按波动率调整评分排序
+            best_off = max(off_score, key=off_score.get)
             best_off_mom = off_mom[best_off]
         else:
             best_off = CASH
@@ -70,7 +88,7 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
         if best_off_mom > MOM_THRESHOLD:
             current_asset = best_off
         else:
-            # 直接切换到现金，不尝试选择防御型资产
+            # 切换到现金
             current_asset = CASH
 
         signals.iloc[i] = current_asset
