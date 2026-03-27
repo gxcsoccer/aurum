@@ -1,6 +1,6 @@
 """
 Aurum 多资产轮动策略 — agent 可以修改此文件的所有内容
-当前策略：Dual Momentum + 短期动量过滤 (放宽阈值) + 波动率调整动量排名 + 退出滞后效应 + 防御资产基于进攻动量强度选择
+当前策略：Dual Momentum + 短期动量过滤 (放宽阈值) + 波动率调整动量排名 + 退出滞后效应 + 防御资产基于进攻动量强度选择 + 自适应防御阈值
 """
 import pandas as pd
 import numpy as np
@@ -13,6 +13,13 @@ SHORT_MOM_THRESHOLD = -0.10  # 短期动量阈值，低于此值则避险（从 
 CASH = "SHY"              # 现金等价资产
 OFFENSIVE = ["SPY", "QQQ", "EFA", "EEM"]  # 进攻型资产
 DEFENSIVE = ["TLT", "GLD", "SHY"]  # 防御型资产
+
+# 自适应防御阈值参数
+VOL_PERCENTILE_HIGH = 0.70  # 波动率高分位阈值
+VOL_PERCENTILE_LOW = 0.30   # 波动率低分位阈值
+DEF_THRESHOLD_HIGH_VOL = -0.03  # 高波动时防御切换阈值（更宽松，-3% 就切防御）
+DEF_THRESHOLD_LOW_VOL = -0.08   # 低波动时防御切换阈值（更严格，-8% 才切防御）
+DEF_THRESHOLD_NORMAL = -0.05    # 正常波动时防御切换阈值（-5%）
 
 # ============ 信号逻辑区 ============
 def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
@@ -52,6 +59,13 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
     
     vol_adj_mom_df = pd.DataFrame(vol_adj_mom).reindex(all_dates)
 
+    # 计算 SPY 波动率的历史分位数（用于自适应阈值）
+    spy_vol = vol_df["SPY"].dropna()
+    spy_vol_quantiles = {
+        'high': spy_vol.quantile(VOL_PERCENTILE_HIGH),
+        'low': spy_vol.quantile(VOL_PERCENTILE_LOW)
+    }
+
     # 生成信号
     signals = pd.Series(CASH, index=all_dates)
     current_asset = CASH
@@ -82,12 +96,21 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
             best_off_mom_long = -1
             best_off_mom_short = 0
 
+        # 根据当前 SPY 波动率状态确定防御切换阈值
+        current_spy_vol = vol_df.loc[date, "SPY"] if "SPY" in vol_df.columns else 0
+        if current_spy_vol > spy_vol_quantiles['high']:
+            def_threshold = DEF_THRESHOLD_HIGH_VOL  # 高波动，更保守
+        elif current_spy_vol < spy_vol_quantiles['low']:
+            def_threshold = DEF_THRESHOLD_LOW_VOL   # 低波动，更激进
+        else:
+            def_threshold = DEF_THRESHOLD_NORMAL    # 正常波动
+
         # 防御资产选择逻辑：基于进攻型资产动量强度选择不同防御资产
-        def select_defensive(row_vol_adj, row_long, offensive_mom_long):
+        def select_defensive(row_vol_adj, row_long, offensive_mom_long, threshold):
             """
             根据进攻型资产动量强度选择防御资产：
-            - 进攻动量温和下跌 (0 > mom > -5%): 选 TLT (通常在温和下跌中表现好)
-            - 进攻动量严重下跌 (mom <= -5%): 选 GLD (危机对冲)
+            - 进攻动量严重下跌 (mom <= threshold): 选 GLD (危机对冲)
+            - 进攻动量温和下跌 (threshold < mom < 0): 选 TLT (通常在温和下跌中表现好)
             - 否则：选波动率调整动量最强的防御资产
             """
             def_vol_adj = {k: row_vol_adj[k] for k in DEFENSIVE if k in row_vol_adj}
@@ -96,7 +119,7 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
                 return CASH
             
             # 基于进攻型资产长期动量强度选择防御资产
-            if offensive_mom_long < -0.05:
+            if offensive_mom_long <= threshold:
                 # 严重下跌，优先 GLD 作为危机对冲
                 if "GLD" in def_vol_adj:
                     return "GLD"
@@ -124,7 +147,7 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
                 current_asset = best_off
             else:
                 # 两个条件都失败，切换到防御
-                current_asset = select_defensive(row_vol_adj, row_long, best_off_mom_long)
+                current_asset = select_defensive(row_vol_adj, row_long, best_off_mom_long, def_threshold)
                 in_offensive = False
         else:
             # 当前在防御中，需要两个条件都满足才能进入进攻
@@ -133,7 +156,7 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
                 in_offensive = True
             else:
                 # 切换到防御型资产
-                current_asset = select_defensive(row_vol_adj, row_long, best_off_mom_long)
+                current_asset = select_defensive(row_vol_adj, row_long, best_off_mom_long, def_threshold)
                 in_offensive = False
 
         signals.iloc[i] = current_asset
