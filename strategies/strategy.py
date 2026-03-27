@@ -7,7 +7,7 @@ import numpy as np
 
 # ============ 参数区 ============
 LOOKBACK = 252          # 动量回望期（~12 个月）
-VOL_LOOKBACK = 126      # 波动率计算期（~6 个月）
+VOL_LOOKBACK = 180      # 波动率计算期（~9 个月，从 126 天延长）
 SPY_OUTPERFORM_MARGIN = 0.0  # 进攻型资产需要超过 SPY 动量的幅度（0% 表示只需超过或等于 SPY）
 CASH = "SHY"            # 现金等价资产
 OFFENSIVE = ["SPY", "QQQ", "EFA", "EEM"]   # 进攻型资产
@@ -21,7 +21,7 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
 
     波动率调整动量策略 + 动态防御资产选择 + 相对 SPY 动量过滤：
     1. 计算每个资产的动量（12 个月）
-    2. 计算每个资产的波动率（6 个月）
+    2. 计算每个资产的波动率（9 个月）
     3. 使用动量/波动率作为评分指标
     4. 如果最强进攻型资产动量 >= SPY 动量 → 持有它
     5. 否则 → 切换到防御型资产中波动率调整动量最强的
@@ -44,7 +44,7 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
         close = df["close"].reindex(all_dates)
         # 动量：12 个月收益率
         momentums[name] = close.pct_change(LOOKBACK).shift(1)
-        # 波动率：6 个月年化波动率
+        # 波动率：9 个月年化波动率（从 6 个月延长到 9 个月）
         returns = close.pct_change().shift(1)
         volatilities[name] = returns.rolling(VOL_LOOKBACK).std() * np.sqrt(252)
 
