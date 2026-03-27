@@ -1,6 +1,6 @@
 """
 Aurum 多资产轮动策略 — agent 可以修改此文件的所有内容
-当前策略：Dual Momentum + 短期动量过滤 (放宽阈值) + 波动率调整动量排名 + 退出滞后效应 + 防御资产短期动量选择
+当前策略：Dual Momentum + 短期动量过滤 (放宽阈值) + 波动率调整动量排名 + 退出滞后效应 + 防御资产波动率调整动量选择
 """
 import pandas as pd
 import numpy as np
@@ -90,10 +90,10 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
                 current_asset = best_off
             else:
                 # 两个条件都失败，切换到防御
-                # 改进：防御资产使用短期动量选择，更快速切换到当前环境更优的防御资产
-                def_mom = {k: row_short[k] for k in DEFENSIVE if k in row_short}
-                if def_mom:
-                    current_asset = max(def_mom, key=def_mom.get)
+                # 改进：防御资产使用波动率调整动量选择，减少噪音并提高风险调整后收益
+                def_vol_adj = {k: row_vol_adj[k] for k in DEFENSIVE if k in row_vol_adj}
+                if def_vol_adj:
+                    current_asset = max(def_vol_adj, key=def_vol_adj.get)
                 else:
                     current_asset = CASH
                 in_offensive = False
@@ -103,11 +103,11 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
                 current_asset = best_off
                 in_offensive = True
             else:
-                # 切换到防御型资产中选短期动量最强的
-                # 改进：防御资产使用短期动量选择，更快速切换到当前环境更优的防御资产
-                def_mom = {k: row_short[k] for k in DEFENSIVE if k in row_short}
-                if def_mom:
-                    current_asset = max(def_mom, key=def_mom.get)
+                # 切换到防御型资产中选波动率调整动量最强的
+                # 改进：防御资产使用波动率调整动量选择，减少噪音并提高风险调整后收益
+                def_vol_adj = {k: row_vol_adj[k] for k in DEFENSIVE if k in row_vol_adj}
+                if def_vol_adj:
+                    current_asset = max(def_vol_adj, key=def_vol_adj.get)
                 else:
                     current_asset = CASH
                 in_offensive = False
