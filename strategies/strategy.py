@@ -1,64 +1,91 @@
-"""
-Aurum Strategy — agent 可以修改此文件的所有内容
-当前策略：双动量确认退出策略（基线 v11 - 入场动量加速确认 + 成交量过滤 + 最低持仓期）
-"""
 import pandas as pd
 import numpy as np
 
 # ============ 参数区 ============
-LOOKBACK_LONG = 10       # 长期动量回望期（天）
-LOOKBACK_SHORT = 5       # 短期动量回望期（天）
-ENTRY_THRESH = 0.001     # 入场阈值（10 日收益率 > 0.1%）
-EXIT_THRESH_LONG = -0.01 # 长期动量退出阈值（10 日收益率 < -1%）
-EXIT_THRESH_SHORT = -0.005  # 短期动量退出阈值（5 日收益率 < -0.5%）
-MOMENTUM_ACCEL_LOOKBACK = 3  # 动量加速确认回望期（天）
-VOLUME_LOOKBACK = 20     # 成交量均线回望期（天）
-MIN_HOLD_DAYS = 3        # 最低持仓天数（入场后至少持有 3 天才允许退出）
+LOOKBACK = 252          # 动量回望期（~12 个月）
+VOL_LOOKBACK = 60       # 波动率回望期（~3 个月）
+CASH = "SHY"            # 现金等价资产
+OFFENSIVE = ["SPY", "QQQ", "EFA", "EEM"]   # 进攻型资产
+DEFENSIVE = ["TLT", "GLD", "SHY"]          # 防御型资产
 
 # ============ 信号逻辑区 ============
-def generate_signals(df: pd.DataFrame) -> pd.Series:
+def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
     """
-    输入：OHLCV DataFrame (columns: open, high, low, close, volume)
-    输出：signal Series, 值为 1（做多）或 0（空仓）
-    """
-    # 长期动量（10 日收益率，shift(1) 确保无前视偏差）
-    momentum_long = df['close'].pct_change(LOOKBACK_LONG).shift(1)
-    
-    # 短期动量（5 日收益率，shift(1) 确保无前视偏差）
-    momentum_short = df['close'].pct_change(LOOKBACK_SHORT).shift(1)
-    
-    # 动量加速确认（当前动量 > 3 日前动量，确保趋势在强化）
-    momentum_long_prev = momentum_long.shift(MOMENTUM_ACCEL_LOOKBACK)
-    
-    # 成交量确认（当日成交量 > 20 日均量，shift(1) 确保无前视偏差）
-    volume_ma = df['volume'].rolling(VOLUME_LOOKBACK).mean().shift(1)
-    volume_confirm = df['volume'].shift(1) > volume_ma
+    输入：prices dict，key=资产名，value=OHLCV DataFrame
+    输出：Series，index=日期，values=持有的资产名 (str)
 
-    # 初始化信号
-    signal = pd.Series(0, index=df.index)
-    
-    # 当前持仓状态（用于实现进出场不对称）
-    position = 0
-    entry_day = -1  # 记录入场日期索引
-    
-    for i in range(len(df)):
-        if position == 0:
-            # 空仓时：长期动量超过入场阈值 且 动量处于加速状态 且 成交量确认 才入场
-            if (momentum_long.iloc[i] > ENTRY_THRESH and 
-                momentum_long.iloc[i] > momentum_long_prev.iloc[i] and
-                volume_confirm.iloc[i]):
-                position = 1
-                entry_day = i
+    变异：波动率调整动量 (Volatility-Adjusted Momentum)
+    1. 计算每个资产的动量和波动率
+    2. 评分 = 动量 / 波动率
+    3. 在进攻型资产中选评分最高的
+    4. 如果最强资产的原始动量为正 → 持有它
+    5. 否则 → 切换到防御型资产中评分最高的
+    6. 每月初再平衡一次
+    """
+    # 获取公共日期
+    all_dates = None
+    for df in prices.values():
+        idx = df.index
+        if all_dates is None:
+            all_dates = idx
         else:
-            # 持仓时：检查是否满足最低持仓期
-            days_held = i - entry_day
-            if days_held >= MIN_HOLD_DAYS:
-                # 满足最低持仓期后：需长期动量跌破阈值 且 短期动量为负 才退出（双重确认）
-                if momentum_long.iloc[i] < EXIT_THRESH_LONG and momentum_short.iloc[i] < EXIT_THRESH_SHORT:
-                    position = 0
-                    entry_day = -1
-            # 如果未达到最低持仓期，强制保持持仓
-        
-        signal.iloc[i] = position
+            all_dates = all_dates.intersection(idx)
+    all_dates = all_dates.sort_values()
 
-    return signal
+    # 计算每个资产的动量和波动率（shift(1) 防止前视偏差）
+    momentums = {}
+    volatilities = {}
+    for name, df in prices.items():
+        close = df["close"].reindex(all_dates)
+        # 动量：12 个月收益率
+        momentums[name] = close.pct_change(LOOKBACK).shift(1)
+        # 波动率：60 日收益率标准差
+        volatilities[name] = close.pct_change().rolling(VOL_LOOKBACK).std().shift(1)
+
+    mom_df = pd.DataFrame(momentums).reindex(all_dates)
+    vol_df = pd.DataFrame(volatilities).reindex(all_dates)
+    
+    # 计算波动率调整动量评分 (避免除以 0)
+    score_df = mom_df / (vol_df + 1e-6)
+
+    # 生成信号
+    signals = pd.Series(CASH, index=all_dates)
+    current_asset = CASH
+
+    for i, date in enumerate(all_dates):
+        # 月度再平衡：仅在每月第一个交易日调仓
+        if i > 0 and date.month == all_dates[i - 1].month:
+            signals.iloc[i] = current_asset
+            continue
+
+        # 获取当日数据
+        row_score = score_df.loc[date].dropna()
+        row_mom = mom_df.loc[date].dropna()
+        
+        if len(row_score) == 0:
+            signals.iloc[i] = current_asset
+            continue
+
+        # 选进攻型资产中评分最高的
+        off_score = {k: row_score[k] for k in OFFENSIVE if k in row_score}
+        if off_score:
+            best_off = max(off_score, key=off_score.get)
+            best_off_mom = row_mom.get(best_off, -1)
+        else:
+            best_off = CASH
+            best_off_mom = -1
+
+        # 绝对动量过滤：正动量才持有进攻型 (使用原始动量确保收益为正)
+        if best_off_mom > 0:
+            current_asset = best_off
+        else:
+            # 选防御型中评分最高的
+            def_score = {k: row_score[k] for k in DEFENSIVE if k in row_score}
+            if def_score:
+                current_asset = max(def_score, key=def_score.get)
+            else:
+                current_asset = CASH
+
+        signals.iloc[i] = current_asset
+
+    return signals
