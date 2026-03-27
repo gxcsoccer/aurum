@@ -1,39 +1,37 @@
 """
 Aurum 多资产轮动策略 — agent 可以修改此文件的所有内容
-当前策略：Multi-Period Weighted Momentum + 短期动量过滤 + 波动率调整动量排名 + 退出滞后效应 + 防御资产基于进攻动量强度选择 + 自适应防御阈值 + 进攻资产波动率上限过滤
+当前策略：多期动量加权 + 进攻型波动率调整 + 防御型纯动量 + 防御型 63 日均线趋势过滤 + 市场波动率过滤
 """
 import pandas as pd
 import numpy as np
 
 # ============ 参数区 ============
-LOOKBACK_SHORT = 63       # 短期动量回望期（~3 个月）
-LOOKBACK_MOM_1 = 63       # 动量周期 1（~3 个月）
-LOOKBACK_MOM_2 = 126      # 动量周期 2（~6 个月）
-LOOKBACK_MOM_3 = 252      # 动量周期 3（~12 个月）
-MOM_WEIGHT_1 = 1.0        # 3 个月动量权重
-MOM_WEIGHT_2 = 3.0        # 6 个月动量权重
-MOM_WEIGHT_3 = 5.0        # 12 个月动量权重
-VOL_LOOKBACK = 63         # 波动率计算回望期（~3 个月）
-SHORT_MOM_THRESHOLD = -0.10  # 短期动量阈值，低于此值则避险
-CASH = "SHY"              # 现金等价资产
-OFFENSIVE = ["SPY", "QQQ", "EFA", "EEM"]  # 进攻型资产
-DEFENSIVE = ["TLT", "GLD", "SHY"]  # 防御型资产
-
-# 自适应防御阈值参数
-VOL_PERCENTILE_HIGH = 0.70  # 波动率高分位阈值
-VOL_PERCENTILE_LOW = 0.30   # 波动率低分位阈值
-DEF_THRESHOLD_HIGH_VOL = -0.03  # 高波动时防御切换阈值（更宽松，-3% 就切防御）
-DEF_THRESHOLD_LOW_VOL = -0.08   # 低波动时防御切换阈值（更严格，-8% 才切防御）
-DEF_THRESHOLD_NORMAL = -0.05    # 正常波动时防御切换阈值（-5%）
-
-# 进攻资产波动率上限参数
-VOL_RATIO_THRESHOLD = 1.50  # 如果最佳资产波动率超过次佳资产的 50%，则考虑切换
+MOM_PERIODS = [21, 63, 126, 252]  # 多期动量：1/3/6/12 个月
+MOM_WEIGHTS = [1, 2, 4, 6]        # 权重分配（短期到长期递增）
+VOL_LOOKBACK = 210                # 波动率计算期（~10 个月）
+SPY_OUTPERFORM_MARGIN = 0.0       # 进攻型资产需要超过 SPY 动量的幅度
+VOL_THRESHOLD = 0.01              # 高波动期额外要求的超额收益门槛
+CASH = "SHY"                      # 现金等价资产
+OFFENSIVE = ["SPY", "QQQ", "EFA", "EEM"]   # 进攻型资产
+DEFENSIVE = ["TLT", "GLD", "SHY"]          # 防御型资产
+DEFENSIVE_MA_PERIOD = 63          # 防御型资产趋势确认均线周期
 
 # ============ 信号逻辑区 ============
 def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
     """
     输入：prices dict，key=资产名，value=OHLCV DataFrame
     输出：Series，index=日期，values=持有的资产名 (str)
+
+    多期动量加权策略 + 进攻型波动率调整 + 防御型纯动量 + 防御型趋势过滤 + 市场波动率过滤：
+    1. 计算每个资产的多期动量（1/3/6/12 个月加权）
+    2. 计算每个资产的波动率（10 个月）
+    3. 进攻型资产使用动量/波动率作为评分指标
+    4. 防御型资产使用纯动量作为评分指标
+    5. 防御型资产需价格高于 63 日均线才考虑持有（否则切到 SHY）
+    6. 计算市场平均波动率，高于中位数时提高进攻门槛
+    7. 如果最强进攻型资产动量 >= SPY 动量 + 波动率调整 → 持有它
+    8. 否则 → 切换到防御型资产中纯动量最强的（需通过趋势过滤）
+    9. 每月初再平衡一次
     """
     # 获取公共日期
     all_dates = None
@@ -45,153 +43,112 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
             all_dates = all_dates.intersection(idx)
     all_dates = all_dates.sort_values()
 
-    # 计算每个资产的短期动量、波动率（shift(1) 防止前视偏差）
-    mom_short = {}
-    volatility = {}
-    for name, df in prices.items():
-        close = df["close"].reindex(all_dates)
-        returns = close.pct_change()
-        mom_short[name] = close.pct_change(LOOKBACK_SHORT).shift(1)
-        volatility[name] = returns.rolling(VOL_LOOKBACK).std().shift(1)
-
-    # 计算多期加权动量（3/6/12 个月加权组合）
-    mom_weighted = {}
-    for name, df in prices.items():
-        close = df["close"].reindex(all_dates)
-        mom1 = close.pct_change(LOOKBACK_MOM_1).shift(1)
-        mom2 = close.pct_change(LOOKBACK_MOM_2).shift(1)
-        mom3 = close.pct_change(LOOKBACK_MOM_3).shift(1)
-        # 加权组合
-        total_weight = MOM_WEIGHT_1 + MOM_WEIGHT_2 + MOM_WEIGHT_3
-        mom_weighted[name] = (mom1 * MOM_WEIGHT_1 + mom2 * MOM_WEIGHT_2 + mom3 * MOM_WEIGHT_3) / total_weight
-
-    mom_short_df = pd.DataFrame(mom_short).reindex(all_dates)
-    mom_weighted_df = pd.DataFrame(mom_weighted).reindex(all_dates)
-    vol_df = pd.DataFrame(volatility).reindex(all_dates)
-
-    # 计算波动率调整动量（风险调整后的动量得分）
-    vol_adj_mom = {}
-    for name in mom_weighted_df.columns:
-        vol_adj_mom[name] = mom_weighted_df[name] / (vol_df[name] + 1e-6)  # 避免除零
+    # 计算每个资产的多期加权动量和波动率（shift(1) 防止前视偏差）
+    momentums = {}
+    volatilities = {}
+    ma_63 = {}
     
-    vol_adj_mom_df = pd.DataFrame(vol_adj_mom).reindex(all_dates)
+    for name, df in prices.items():
+        close = df["close"].reindex(all_dates)
+        
+        # 多期动量加权
+        mom_values = []
+        for period, weight in zip(MOM_PERIODS, MOM_WEIGHTS):
+            mom = close.pct_change(period).shift(1)
+            mom_values.append(mom * weight)
+        # 加权平均动量
+        momentums[name] = sum(mom_values) / sum(MOM_WEIGHTS)
+        
+        # 波动率：10 个月年化波动率
+        returns = close.pct_change().shift(1)
+        volatilities[name] = returns.rolling(VOL_LOOKBACK).std() * np.sqrt(252)
+        
+        # 63 日均线（用于防御型资产趋势过滤）
+        ma_63[name] = close.rolling(DEFENSIVE_MA_PERIOD).mean().shift(1)
 
-    # 计算 SPY 波动率的历史分位数（用于自适应阈值）
-    spy_vol = vol_df["SPY"].dropna()
-    spy_vol_quantiles = {
-        'high': spy_vol.quantile(VOL_PERCENTILE_HIGH),
-        'low': spy_vol.quantile(VOL_PERCENTILE_LOW)
-    }
+    mom_df = pd.DataFrame(momentums).reindex(all_dates)
+    vol_df = pd.DataFrame(volatilities).reindex(all_dates)
+    ma_df = pd.DataFrame(ma_63).reindex(all_dates)
+
+    # 计算进攻型资产的波动率调整动量评分
+    off_score_df = mom_df[OFFENSIVE] / (vol_df[OFFENSIVE] + 0.0001)
+
+    # 防御型资产使用纯动量评分（不除以波动率）
+    def_score_df = mom_df[DEFENSIVE]
+
+    # 计算市场平均波动率用于波动率过滤（使用进攻型资产平均波动率）
+    market_vol = vol_df[OFFENSIVE].mean(axis=1)
+    # 计算滚动中位数（1 年窗口），shift(1) 防止前视
+    market_vol_median = market_vol.rolling(252).median().shift(1)
 
     # 生成信号
     signals = pd.Series(CASH, index=all_dates)
     current_asset = CASH
-    in_offensive = False  # 追踪当前是否在进攻型资产中
 
     for i, date in enumerate(all_dates):
-        # 月度再平衡
+        # 月度再平衡：仅在每月第一个交易日调仓
         if i > 0 and date.month == all_dates[i - 1].month:
             signals.iloc[i] = current_asset
             continue
 
-        row_weighted = mom_weighted_df.loc[date].dropna()
-        row_short = mom_short_df.loc[date].dropna()
-        row_vol_adj = vol_adj_mom_df.loc[date].dropna()
-        row_vol = vol_df.loc[date].dropna()
+        row_off_score = off_score_df.loc[date].dropna()
+        row_mom = mom_df.loc[date].dropna()
+        row_def_score = def_score_df.loc[date].dropna()
         
-        if len(row_weighted) == 0:
+        if len(row_off_score) == 0:
             signals.iloc[i] = current_asset
             continue
 
-        # 选进攻型中波动率调整动量最强的
-        off_mom = {k: row_vol_adj[k] for k in OFFENSIVE if k in row_vol_adj}
-        if off_mom:
-            # 按波动率调整动量排序
-            sorted_off = sorted(off_mom.items(), key=lambda x: x[1], reverse=True)
-            best_off = sorted_off[0][0]
-            best_off_mom_weighted = row_weighted.get(best_off, -1) if best_off in row_weighted else -1
-            best_off_mom_short = row_short.get(best_off, 0) if best_off in row_short else 0
-            best_off_vol = row_vol.get(best_off, 0) if best_off in row_vol else 0
-            
-            # 波动率上限过滤：如果最佳资产波动率显著高于其他可行选项，切换到波动率更低的资产
-            if len(sorted_off) >= 2:
-                second_best = sorted_off[1][0]
-                second_best_vol = row_vol.get(second_best, 0) if second_best in row_vol else 0
-                
-                # 如果最佳资产波动率超过次佳资产 50%，且次佳资产动量仍然为正，则切换
-                if best_off_vol > second_best_vol * VOL_RATIO_THRESHOLD and row_weighted.get(second_best, 0) > 0:
-                    best_off = second_best
-                    best_off_mom_weighted = row_weighted.get(best_off, -1)
-                    best_off_mom_short = row_short.get(best_off, 0)
-                    best_off_vol = row_vol.get(best_off, 0)
+        # 选进攻型资产中波动率调整动量最强的
+        if len(row_off_score) > 0:
+            best_off = row_off_score.idxmax()
+            best_off_mom = row_mom.get(best_off, -1)
         else:
             best_off = CASH
-            best_off_mom_weighted = -1
-            best_off_mom_short = 0
-            best_off_vol = 0
+            best_off_mom = -1
 
-        # 根据当前 SPY 波动率状态确定防御切换阈值
-        current_spy_vol = vol_df.loc[date, "SPY"] if "SPY" in vol_df.columns else 0
-        if current_spy_vol > spy_vol_quantiles['high']:
-            def_threshold = DEF_THRESHOLD_HIGH_VOL  # 高波动，更保守
-        elif current_spy_vol < spy_vol_quantiles['low']:
-            def_threshold = DEF_THRESHOLD_LOW_VOL   # 低波动，更激进
+        # 相对动量过滤：进攻型资产动量需超过或等于 SPY 动量
+        spy_mom = row_mom.get("SPY", -1) if "SPY" in row_mom else 0
+        
+        # 波动率过滤：如果市场波动率高于中位数，提高进攻门槛
+        vol_adjustment = 0.0
+        if date in market_vol.index and date in market_vol_median.index:
+            current_market_vol = market_vol.loc[date]
+            median_market_vol = market_vol_median.loc[date]
+            if pd.notna(current_market_vol) and pd.notna(median_market_vol):
+                if current_market_vol > median_market_vol:
+                    vol_adjustment = VOL_THRESHOLD  # 高波动期要求更高超额收益
+        
+        if best_off_mom >= spy_mom + SPY_OUTPERFORM_MARGIN + vol_adjustment:
+            current_asset = best_off
         else:
-            def_threshold = DEF_THRESHOLD_NORMAL    # 正常波动
-
-        # 防御资产选择逻辑：基于进攻型资产动量强度选择不同防御资产
-        def select_defensive(row_vol_adj, row_weighted, offensive_mom_weighted, threshold):
-            """
-            根据进攻型资产动量强度选择防御资产：
-            - 进攻动量严重下跌 (mom <= threshold): 选 GLD (危机对冲)
-            - 进攻动量温和下跌 (threshold < mom < 0): 选 TLT (通常在温和下跌中表现好)
-            - 否则：选波动率调整动量最强的防御资产
-            """
-            def_vol_adj = {k: row_vol_adj[k] for k in DEFENSIVE if k in row_vol_adj}
-            
-            if not def_vol_adj:
-                return CASH
-            
-            # 基于进攻型资产加权动量强度选择防御资产
-            if offensive_mom_weighted <= threshold:
-                # 严重下跌，优先 GLD 作为危机对冲
-                if "GLD" in def_vol_adj:
-                    return "GLD"
-                elif "TLT" in def_vol_adj:
-                    return "TLT"
+            # 切换到防御型资产中纯动量最强的（需通过 63 日均线趋势过滤）
+            if len(row_def_score) > 0:
+                # 按动量排序防御型资产
+                def_sorted = row_def_score.sort_values(ascending=False)
+                selected_def = None
+                
+                for def_asset in def_sorted.index:
+                    if def_asset == CASH:
+                        selected_def = CASH
+                        break
+                    
+                    # 检查防御型资产是否高于 63 日均线（使用 shift(1) 的收盘价防止前视）
+                    close_series = prices[def_asset]["close"].reindex(all_dates).shift(1)
+                    close_price = close_series.loc[date] if date in close_series.index else None
+                    asset_ma = ma_df.loc[date, def_asset]
+                    
+                    if close_price is not None and pd.notna(asset_ma) and close_price > asset_ma:
+                        selected_def = def_asset
+                        break
+                
+                if selected_def is None:
+                    # 所有防御资产都在 63 日均线下方，切换到 SHY
+                    current_asset = CASH
                 else:
-                    return CASH
-            elif offensive_mom_weighted < 0:
-                # 温和下跌，优先 TLT (通常与股市负相关)
-                if "TLT" in def_vol_adj:
-                    return "TLT"
-                elif "GLD" in def_vol_adj:
-                    return "GLD"
-                else:
-                    return CASH
+                    current_asset = selected_def
             else:
-                # 进攻动量为正但短期动量触发避险，选波动率调整动量最强的防御资产
-                return max(def_vol_adj, key=def_vol_adj.get)
-
-        # 滞后效应逻辑：退出条件比进入条件更严格
-        if in_offensive:
-            # 已经在进攻型资产中，只有当长期和短期动量同时转负时才退出
-            if best_off_mom_weighted > 0 or best_off_mom_short > SHORT_MOM_THRESHOLD:
-                # 至少一个条件满足，继续保持进攻
-                current_asset = best_off
-            else:
-                # 两个条件都失败，切换到防御
-                current_asset = select_defensive(row_vol_adj, row_weighted, best_off_mom_weighted, def_threshold)
-                in_offensive = False
-        else:
-            # 当前在防御中，需要两个条件都满足才能进入进攻
-            if best_off_mom_weighted > 0 and best_off_mom_short > SHORT_MOM_THRESHOLD:
-                current_asset = best_off
-                in_offensive = True
-            else:
-                # 切换到防御型资产
-                current_asset = select_defensive(row_vol_adj, row_weighted, best_off_mom_weighted, def_threshold)
-                in_offensive = False
+                current_asset = CASH
 
         signals.iloc[i] = current_asset
 
