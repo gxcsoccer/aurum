@@ -1,15 +1,16 @@
 """
 Aurum 多资产轮动策略 — agent 可以修改此文件的所有内容
-当前策略：波动率调整动量 + 动态防御资产选择 + 相对 SPY 动量过滤
+当前策略：多期动量加权 + 波动率调整 + 相对 SPY 动量过滤
 """
 import pandas as pd
 import numpy as np
 
 # ============ 参数区 ============
-LOOKBACK = 252          # 动量回望期（~12 个月）
-VOL_LOOKBACK = 210      # 波动率计算期（~10 个月，从 180 天延长到 210 天）
-SPY_OUTPERFORM_MARGIN = 0.0  # 进攻型资产需要超过 SPY 动量的幅度（0% 表示只需超过或等于 SPY）
-CASH = "SHY"            # 现金等价资产
+MOM_PERIODS = [21, 63, 126, 252]  # 多期动量：1/3/6/12 个月
+MOM_WEIGHTS = [1, 2, 4, 6]        # 权重分配（短期到长期递增）
+VOL_LOOKBACK = 210                # 波动率计算期（~10 个月）
+SPY_OUTPERFORM_MARGIN = 0.0       # 进攻型资产需要超过 SPY 动量的幅度
+CASH = "SHY"                      # 现金等价资产
 OFFENSIVE = ["SPY", "QQQ", "EFA", "EEM"]   # 进攻型资产
 DEFENSIVE = ["TLT", "GLD", "SHY"]          # 防御型资产
 
@@ -19,8 +20,8 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
     输入：prices dict，key=资产名，value=OHLCV DataFrame
     输出：Series，index=日期，values=持有的资产名 (str)
 
-    波动率调整动量策略 + 动态防御资产选择 + 相对 SPY 动量过滤：
-    1. 计算每个资产的动量（12 个月）
+    多期动量加权策略 + 波动率调整 + 相对 SPY 动量过滤：
+    1. 计算每个资产的多期动量（1/3/6/12 个月加权）
     2. 计算每个资产的波动率（10 个月）
     3. 使用动量/波动率作为评分指标
     4. 如果最强进攻型资产动量 >= SPY 动量 → 持有它
@@ -37,14 +38,21 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
             all_dates = all_dates.intersection(idx)
     all_dates = all_dates.sort_values()
 
-    # 计算每个资产的动量和波动率（shift(1) 防止前视偏差）
+    # 计算每个资产的多期加权动量和波动率（shift(1) 防止前视偏差）
     momentums = {}
     volatilities = {}
     for name, df in prices.items():
         close = df["close"].reindex(all_dates)
-        # 动量：12 个月收益率
-        momentums[name] = close.pct_change(LOOKBACK).shift(1)
-        # 波动率：10 个月年化波动率（从 9 个月延长到 10 个月）
+        
+        # 多期动量加权
+        mom_values = []
+        for period, weight in zip(MOM_PERIODS, MOM_WEIGHTS):
+            mom = close.pct_change(period).shift(1)
+            mom_values.append(mom * weight)
+        # 加权平均动量
+        momentums[name] = sum(mom_values) / sum(MOM_WEIGHTS)
+        
+        # 波动率：10 个月年化波动率
         returns = close.pct_change().shift(1)
         volatilities[name] = returns.rolling(VOL_LOOKBACK).std() * np.sqrt(252)
 
