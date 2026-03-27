@@ -25,22 +25,46 @@ Infra Layer (locked)  →  data.py / backtest.py / sandbox.py / llm.py
 | SPY, QQQ, EFA, EEM | Offensive (equities) |
 | TLT, GLD, SHY | Defensive (bonds, gold, cash) |
 
-### In-Sample (2008–2024, 17 years)
+### Cumulative Growth of $10,000 (2008–2024)
 
-| Metric | Value |
-|---|---|
-| Sharpe | 1.22 |
-| Annual Return | 14.3% |
-| Excess vs SPY B&H | +5.26%/yr |
-| Max Drawdown | 28.6% |
-
-### Holdout (2025, unseen data)
-
-| Metric | Strategy | SPY B&H |
+| | Aurum | SPY B&H |
 |---|---|---|
-| Total Return | **+20.22%** | +18.60% |
-| Max Drawdown | **18.25%** | 18.76% |
-| Sharpe | +1.13 | — |
+| **Final Value** | **$160,084** | $56,023 |
+| Total Return | +1500% | +460% |
+| Annual Return | +18.0% | +10.6% |
+| Sharpe | 0.99 | ~0.55 |
+| Max Drawdown | 28.6% | ~51% |
+
+### Year-by-Year Performance
+
+| Year | Aurum | SPY | Excess | Winner |
+|---|---|---|---|---|
+| 2008 | +6.43% | -36.24% | **+42.67%** | Aurum |
+| 2009 | +44.67% | +22.65% | +22.01% | Aurum |
+| 2010 | +17.84% | +13.14% | +4.70% | Aurum |
+| 2011 | -1.64% | +0.85% | -2.49% | SPY |
+| 2012 | +11.95% | +14.17% | -2.22% | SPY |
+| 2013 | +25.50% | +29.00% | -3.50% | SPY |
+| 2014 | +17.87% | +14.56% | +3.31% | Aurum |
+| 2015 | +9.65% | +1.29% | +8.37% | Aurum |
+| 2016 | -3.01% | +13.59% | -16.60% | SPY |
+| 2017 | +22.98% | +20.78% | +2.20% | Aurum |
+| 2018 | -0.94% | -5.25% | +4.31% | Aurum |
+| 2019 | +62.04% | +31.09% | +30.96% | Aurum |
+| 2020 | +41.28% | +17.24% | +24.04% | Aurum |
+| 2021 | +25.57% | +30.51% | -4.94% | SPY |
+| 2022 | -11.62% | -18.65% | +7.02% | Aurum |
+| 2023 | +26.42% | +26.71% | -0.29% | SPY |
+| 2024 | +22.29% | +26.05% | -3.76% | SPY |
+
+**Win rate: 10/17 years (59%)** — beats SPY in down years, keeps up in bull years.
+
+### Out-of-Sample (unseen data, never used during evolution)
+
+| Period | Aurum | SPY | Excess |
+|---|---|---|---|
+| 2025 Full Year | +20.22% | +18.60% | **+1.62%** |
+| 2026 Q1 (Jan–Mar) | -1.47% | -5.32% | **+3.85%** |
 
 ## Key Innovations (discovered by LLM agent)
 
