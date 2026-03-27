@@ -1,0 +1,64 @@
+"""
+Aurum Strategy — agent 可以修改此文件的所有内容
+当前策略：双动量确认退出策略（基线 v11 - 入场动量加速确认 + 成交量过滤 + 最低持仓期）
+"""
+import pandas as pd
+import numpy as np
+
+# ============ 参数区 ============
+LOOKBACK_LONG = 10       # 长期动量回望期（天）
+LOOKBACK_SHORT = 5       # 短期动量回望期（天）
+ENTRY_THRESH = 0.001     # 入场阈值（10 日收益率 > 0.1%）
+EXIT_THRESH_LONG = -0.01 # 长期动量退出阈值（10 日收益率 < -1%）
+EXIT_THRESH_SHORT = -0.005  # 短期动量退出阈值（5 日收益率 < -0.5%）
+MOMENTUM_ACCEL_LOOKBACK = 3  # 动量加速确认回望期（天）
+VOLUME_LOOKBACK = 20     # 成交量均线回望期（天）
+MIN_HOLD_DAYS = 3        # 最低持仓天数（入场后至少持有 3 天才允许退出）
+
+# ============ 信号逻辑区 ============
+def generate_signals(df: pd.DataFrame) -> pd.Series:
+    """
+    输入：OHLCV DataFrame (columns: open, high, low, close, volume)
+    输出：signal Series, 值为 1（做多）或 0（空仓）
+    """
+    # 长期动量（10 日收益率，shift(1) 确保无前视偏差）
+    momentum_long = df['close'].pct_change(LOOKBACK_LONG).shift(1)
+    
+    # 短期动量（5 日收益率，shift(1) 确保无前视偏差）
+    momentum_short = df['close'].pct_change(LOOKBACK_SHORT).shift(1)
+    
+    # 动量加速确认（当前动量 > 3 日前动量，确保趋势在强化）
+    momentum_long_prev = momentum_long.shift(MOMENTUM_ACCEL_LOOKBACK)
+    
+    # 成交量确认（当日成交量 > 20 日均量，shift(1) 确保无前视偏差）
+    volume_ma = df['volume'].rolling(VOLUME_LOOKBACK).mean().shift(1)
+    volume_confirm = df['volume'].shift(1) > volume_ma
+
+    # 初始化信号
+    signal = pd.Series(0, index=df.index)
+    
+    # 当前持仓状态（用于实现进出场不对称）
+    position = 0
+    entry_day = -1  # 记录入场日期索引
+    
+    for i in range(len(df)):
+        if position == 0:
+            # 空仓时：长期动量超过入场阈值 且 动量处于加速状态 且 成交量确认 才入场
+            if (momentum_long.iloc[i] > ENTRY_THRESH and 
+                momentum_long.iloc[i] > momentum_long_prev.iloc[i] and
+                volume_confirm.iloc[i]):
+                position = 1
+                entry_day = i
+        else:
+            # 持仓时：检查是否满足最低持仓期
+            days_held = i - entry_day
+            if days_held >= MIN_HOLD_DAYS:
+                # 满足最低持仓期后：需长期动量跌破阈值 且 短期动量为负 才退出（双重确认）
+                if momentum_long.iloc[i] < EXIT_THRESH_LONG and momentum_short.iloc[i] < EXIT_THRESH_SHORT:
+                    position = 0
+                    entry_day = -1
+            # 如果未达到最低持仓期，强制保持持仓
+        
+        signal.iloc[i] = position
+
+    return signal

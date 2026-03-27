@@ -1,0 +1,26 @@
+# Data cache
+data_cache/
+
+# Experiment audit trail (full history including failures, not tracked)
+experiments/results.tsv
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Environment
+.env
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docs (spec drafts)
+docs/

@@ -1,0 +1,58 @@
+# ============================================================
+# Aurum Configuration — 多资产轮动版
+# ============================================================
+
+# 资产池（扩展版：7 核心 + 4 行业 ETF）
+universe:
+  # 核心资产
+  - SPY    # 美股大盘
+  - QQQ    # 纳斯达克
+  - EFA    # 国际发达市场
+  - EEM    # 新兴市场
+  - TLT    # 长期美国国债
+  - GLD    # 黄金
+  - SHY    # 短期国债（现金等价）
+  # 行业 ETF（提供更多轮动机会）
+  - XLK    # 科技
+  - XLE    # 能源
+  - XLF    # 金融
+  - XLV    # 医疗保健
+
+cash_asset: "SHY"
+benchmark: "SPY"
+
+# 评估期
+eval_start: "2008-01-01"
+eval_end: "2024-12-31"
+
+# 保留期
+holdout_start: "2025-01-01"
+holdout_end: "2025-12-31"
+
+# Walk-forward 子期间
+sub_period: "yearly"
+
+# 交易成本（每次切换资产的成本）
+cost_per_trade: 0.001
+
+# 评分硬约束
+max_drawdown_limit: 0.30
+min_sharpe: 0.0
+
+# ============================================================
+# LLM 设置
+# ============================================================
+llm:
+  base_url: "https://coding.dashscope.aliyuncs.com/v1"
+  api_key_env: "DASHSCOPE_API_KEY"
+  models:
+    - "qwen3.5-plus"
+  max_tokens: 4096
+  temperature: 0.7
+
+# ============================================================
+# 进化循环设置
+# ============================================================
+loop:
+  iterations: 200
+  history_window: 30
