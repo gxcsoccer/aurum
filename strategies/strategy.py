@@ -3,7 +3,7 @@ import numpy as np
 
 # ============ 参数区 ============
 LOOKBACK = 252          # 动量回望期（~12 个月）
-VOL_LOOKBACK = 60       # 波动率回望期（~3 个月）
+VOL_LOOKBACK = 21       # 波动率回望期（~1 个月）- 变异：从 60 日缩短至 21 日，更灵敏反应风险
 CASH = "SHY"            # 现金等价资产
 OFFENSIVE = ["SPY", "QQQ", "EFA", "EEM"]   # 进攻型资产
 DEFENSIVE = ["TLT", "GLD", "SHY"]          # 防御型资产
@@ -14,7 +14,7 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
     输入：prices dict，key=资产名，value=OHLCV DataFrame
     输出：Series，index=日期，values=持有的资产名 (str)
 
-    变异：波动率调整动量 (Volatility-Adjusted Momentum)
+    变异：缩短波动率回望期 (60 日 → 21 日)
     1. 计算每个资产的动量和波动率
     2. 评分 = 动量 / 波动率
     3. 在进攻型资产中选评分最高的
@@ -39,7 +39,7 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
         close = df["close"].reindex(all_dates)
         # 动量：12 个月收益率
         momentums[name] = close.pct_change(LOOKBACK).shift(1)
-        # 波动率：60 日收益率标准差
+        # 波动率：21 日收益率标准差（变异：从 60 日缩短至 21 日）
         volatilities[name] = close.pct_change().rolling(VOL_LOOKBACK).std().shift(1)
 
     mom_df = pd.DataFrame(momentums).reindex(all_dates)
