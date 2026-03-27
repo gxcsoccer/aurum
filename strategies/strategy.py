@@ -1,6 +1,6 @@
 """
 Aurum 多资产轮动策略 — agent 可以修改此文件的所有内容
-当前策略：Dual Momentum + 短期动量过滤 + 波动率调整动量排名
+当前策略：Dual Momentum + 短期动量过滤 (放宽阈值) + 波动率调整动量排名
 """
 import pandas as pd
 import numpy as np
@@ -9,7 +9,7 @@ import numpy as np
 LOOKBACK_LONG = 252       # 长期动量回望期（~12 个月）
 LOOKBACK_SHORT = 63       # 短期动量回望期（~3 个月）
 VOL_LOOKBACK = 63         # 波动率计算回望期（~3 个月）
-SHORT_MOM_THRESHOLD = -0.05  # 短期动量阈值，低于此值则避险
+SHORT_MOM_THRESHOLD = -0.10  # 短期动量阈值，低于此值则避险（从 -5% 放宽到 -10%）
 CASH = "SHY"              # 现金等价资产
 OFFENSIVE = ["SPY", "QQQ", "EFA", "EEM"]  # 进攻型资产
 DEFENSIVE = ["TLT", "GLD", "SHY"]  # 防御型资产
@@ -81,7 +81,7 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
             best_off_mom_long = -1
             best_off_mom_short = 0
 
-        # 双重检查：长期动量必须为正，且短期动量不能太负
+        # 双重检查：长期动量必须为正，且短期动量不能太负（阈值已放宽）
         if best_off_mom_long > 0 and best_off_mom_short > SHORT_MOM_THRESHOLD:
             current_asset = best_off
         else:
