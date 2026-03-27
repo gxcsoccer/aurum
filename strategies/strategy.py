@@ -1,6 +1,6 @@
 """
 Aurum 多资产轮动策略 — agent 可以修改此文件的所有内容
-当前策略：多期动量加权 + 进攻型波动率调整 + 防御型纯动量
+当前策略：多期动量加权 + 进攻型波动率调整 + 防御型纯动量 + 防御型 63 日均线趋势过滤
 """
 import pandas as pd
 import numpy as np
@@ -13,6 +13,7 @@ SPY_OUTPERFORM_MARGIN = 0.0       # 进攻型资产需要超过 SPY 动量的幅
 CASH = "SHY"                      # 现金等价资产
 OFFENSIVE = ["SPY", "QQQ", "EFA", "EEM"]   # 进攻型资产
 DEFENSIVE = ["TLT", "GLD", "SHY"]          # 防御型资产
+DEFENSIVE_MA_PERIOD = 63          # 防御型资产趋势确认均线周期
 
 # ============ 信号逻辑区 ============
 def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
@@ -20,14 +21,15 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
     输入：prices dict，key=资产名，value=OHLCV DataFrame
     输出：Series，index=日期，values=持有的资产名 (str)
 
-    多期动量加权策略 + 进攻型波动率调整 + 防御型纯动量：
+    多期动量加权策略 + 进攻型波动率调整 + 防御型纯动量 + 防御型趋势过滤：
     1. 计算每个资产的多期动量（1/3/6/12 个月加权）
     2. 计算每个资产的波动率（10 个月）
     3. 进攻型资产使用动量/波动率作为评分指标
     4. 防御型资产使用纯动量作为评分指标
-    5. 如果最强进攻型资产动量 >= SPY 动量 → 持有它
-    6. 否则 → 切换到防御型资产中纯动量最强的
-    7. 每月初再平衡一次
+    5. 防御型资产需价格高于 63 日均线才考虑持有（否则切到 SHY）
+    6. 如果最强进攻型资产动量 >= SPY 动量 → 持有它
+    7. 否则 → 切换到防御型资产中纯动量最强的（需通过趋势过滤）
+    8. 每月初再平衡一次
     """
     # 获取公共日期
     all_dates = None
@@ -42,6 +44,8 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
     # 计算每个资产的多期加权动量和波动率（shift(1) 防止前视偏差）
     momentums = {}
     volatilities = {}
+    ma_63 = {}  # 63 日均线用于防御型资产趋势过滤
+    
     for name, df in prices.items():
         close = df["close"].reindex(all_dates)
         
@@ -56,9 +60,13 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
         # 波动率：10 个月年化波动率
         returns = close.pct_change().shift(1)
         volatilities[name] = returns.rolling(VOL_LOOKBACK).std() * np.sqrt(252)
+        
+        # 63 日均线（用于防御型资产趋势过滤）
+        ma_63[name] = close.rolling(DEFENSIVE_MA_PERIOD).mean().shift(1)
 
     mom_df = pd.DataFrame(momentums).reindex(all_dates)
     vol_df = pd.DataFrame(volatilities).reindex(all_dates)
+    ma_df = pd.DataFrame(ma_63).reindex(all_dates)
 
     # 计算进攻型资产的波动率调整动量评分
     off_score_df = mom_df[OFFENSIVE] / (vol_df[OFFENSIVE] + 0.0001)
@@ -97,9 +105,31 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
         if best_off_mom >= spy_mom + SPY_OUTPERFORM_MARGIN:
             current_asset = best_off
         else:
-            # 切换到防御型资产中纯动量最强的
+            # 切换到防御型资产中纯动量最强的（需通过 63 日均线趋势过滤）
             if len(row_def_score) > 0:
-                current_asset = row_def_score.idxmax()
+                # 按动量排序防御型资产
+                def_sorted = row_def_score.sort_values(ascending=False)
+                selected_def = None
+                
+                for def_asset in def_sorted.index:
+                    if def_asset == CASH:
+                        selected_def = CASH
+                        break
+                    
+                    # 检查防御型资产是否高于 63 日均线
+                    asset_price = mom_df.loc[date, def_asset]  # 这里用 momentum 近似代表价格趋势
+                    asset_ma = ma_df.loc[date, def_asset]
+                    close_price = prices[def_asset]["close"].loc[date] if date in prices[def_asset]["close"].index else None
+                    
+                    if close_price is not None and close_price > asset_ma:
+                        selected_def = def_asset
+                        break
+                
+                if selected_def is None:
+                    # 所有防御资产都在 63 日均线下方，切换到 SHY
+                    current_asset = CASH
+                else:
+                    current_asset = selected_def
             else:
                 current_asset = CASH
 
