@@ -1,6 +1,6 @@
 """
 Aurum 多资产轮动策略 — agent 可以修改此文件的所有内容
-当前策略：多期动量加权 + 波动率调整 + 相对 SPY 动量过滤
+当前策略：多期动量加权 + 进攻型波动率调整 + 防御型纯动量
 """
 import pandas as pd
 import numpy as np
@@ -20,13 +20,14 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
     输入：prices dict，key=资产名，value=OHLCV DataFrame
     输出：Series，index=日期，values=持有的资产名 (str)
 
-    多期动量加权策略 + 波动率调整 + 相对 SPY 动量过滤：
+    多期动量加权策略 + 进攻型波动率调整 + 防御型纯动量：
     1. 计算每个资产的多期动量（1/3/6/12 个月加权）
     2. 计算每个资产的波动率（10 个月）
-    3. 使用动量/波动率作为评分指标
-    4. 如果最强进攻型资产动量 >= SPY 动量 → 持有它
-    5. 否则 → 切换到防御型资产中波动率调整动量最强的
-    6. 每月初再平衡一次
+    3. 进攻型资产使用动量/波动率作为评分指标
+    4. 防御型资产使用纯动量作为评分指标
+    5. 如果最强进攻型资产动量 >= SPY 动量 → 持有它
+    6. 否则 → 切换到防御型资产中纯动量最强的
+    7. 每月初再平衡一次
     """
     # 获取公共日期
     all_dates = None
@@ -59,9 +60,11 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
     mom_df = pd.DataFrame(momentums).reindex(all_dates)
     vol_df = pd.DataFrame(volatilities).reindex(all_dates)
 
-    # 计算波动率调整动量评分
-    # 避免除以零，添加小值
-    score_df = mom_df / (vol_df + 0.0001)
+    # 计算进攻型资产的波动率调整动量评分
+    off_score_df = mom_df[OFFENSIVE] / (vol_df[OFFENSIVE] + 0.0001)
+
+    # 防御型资产使用纯动量评分（不除以波动率）
+    def_score_df = mom_df[DEFENSIVE]
 
     # 生成信号
     signals = pd.Series(CASH, index=all_dates)
@@ -73,21 +76,18 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
             signals.iloc[i] = current_asset
             continue
 
-        row_score = score_df.loc[date].dropna()
+        row_off_score = off_score_df.loc[date].dropna()
         row_mom = mom_df.loc[date].dropna()
+        row_def_score = def_score_df.loc[date].dropna()
         
-        if len(row_score) == 0:
+        if len(row_off_score) == 0:
             signals.iloc[i] = current_asset
             continue
 
         # 选进攻型资产中波动率调整动量最强的
-        off_score = {k: row_score[k] for k in OFFENSIVE if k in row_score}
-        off_mom = {k: row_mom[k] for k in OFFENSIVE if k in row_mom}
-        
-        if off_score and off_mom:
-            # 按波动率调整评分排序
-            best_off = max(off_score, key=off_score.get)
-            best_off_mom = off_mom[best_off]
+        if len(row_off_score) > 0:
+            best_off = row_off_score.idxmax()
+            best_off_mom = row_mom.get(best_off, -1)
         else:
             best_off = CASH
             best_off_mom = -1
@@ -97,10 +97,9 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
         if best_off_mom >= spy_mom + SPY_OUTPERFORM_MARGIN:
             current_asset = best_off
         else:
-            # 切换到防御型资产中波动率调整动量最强的
-            def_score = {k: row_score[k] for k in DEFENSIVE if k in row_score}
-            if def_score:
-                current_asset = max(def_score, key=def_score.get)
+            # 切换到防御型资产中纯动量最强的
+            if len(row_def_score) > 0:
+                current_asset = row_def_score.idxmax()
             else:
                 current_asset = CASH
 
