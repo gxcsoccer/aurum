@@ -1,6 +1,6 @@
 """
 Aurum 多资产轮动策略 — agent 可以修改此文件的所有内容
-当前策略：波动率调整动量 + 动态防御资产选择
+当前策略：波动率调整动量 + 动态防御资产选择 + 降低动量阈值
 """
 import pandas as pd
 import numpy as np
@@ -8,7 +8,7 @@ import numpy as np
 # ============ 参数区 ============
 LOOKBACK = 252          # 动量回望期（~12 个月）
 VOL_LOOKBACK = 126      # 波动率计算期（~6 个月）
-MOM_THRESHOLD = 0.01    # 进攻型资产需要的最小正动量阈值（1%）
+MOM_THRESHOLD = 0.005   # 进攻型资产需要的最小正动量阈值（0.5%，从 1% 降低）
 CASH = "SHY"            # 现金等价资产
 OFFENSIVE = ["SPY", "QQQ", "EFA", "EEM"]   # 进攻型资产
 DEFENSIVE = ["TLT", "GLD", "SHY"]          # 防御型资产
