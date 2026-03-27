@@ -22,7 +22,7 @@ DEF_THRESHOLD_LOW_VOL = -0.08   # 低波动时防御切换阈值（更严格，-
 DEF_THRESHOLD_NORMAL = -0.05    # 正常波动时防御切换阈值（-5%）
 
 # 进攻资产波动率上限参数
-VOL_RATIO_THRESHOLD = 1.30  # 如果最佳资产波动率超过次佳资产的 30%，则考虑切换
+VOL_RATIO_THRESHOLD = 1.50  # 如果最佳资产波动率超过次佳资产的 50%，则考虑切换（原 1.30）
 
 # ============ 信号逻辑区 ============
 def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
@@ -104,7 +104,7 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
                 second_best = sorted_off[1][0]
                 second_best_vol = row_vol.get(second_best, 0) if second_best in row_vol else 0
                 
-                # 如果最佳资产波动率超过次佳资产 30%，且次佳资产动量仍然为正，则切换
+                # 如果最佳资产波动率超过次佳资产 50%，且次佳资产动量仍然为正，则切换
                 if best_off_vol > second_best_vol * VOL_RATIO_THRESHOLD and row_long.get(second_best, 0) > 0:
                     best_off = second_best
                     best_off_mom_long = row_long.get(best_off, -1)
