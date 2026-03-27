@@ -1,6 +1,6 @@
 """
 Aurum 多资产轮动策略 — agent 可以修改此文件的所有内容
-当前策略：波动率调整动量 + 动态防御资产选择 + 降低动量阈值
+当前策略：波动率调整动量 + 动态防御资产选择 + 相对 SPY 动量过滤
 """
 import pandas as pd
 import numpy as np
@@ -8,7 +8,7 @@ import numpy as np
 # ============ 参数区 ============
 LOOKBACK = 252          # 动量回望期（~12 个月）
 VOL_LOOKBACK = 126      # 波动率计算期（~6 个月）
-MOM_THRESHOLD = 0.005   # 进攻型资产需要的最小正动量阈值（0.5%，从 1% 降低）
+SPY_OUTPERFORM_MARGIN = 0.0  # 进攻型资产需要超过 SPY 动量的幅度（0% 表示只需超过或等于 SPY）
 CASH = "SHY"            # 现金等价资产
 OFFENSIVE = ["SPY", "QQQ", "EFA", "EEM"]   # 进攻型资产
 DEFENSIVE = ["TLT", "GLD", "SHY"]          # 防御型资产
@@ -19,11 +19,11 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
     输入：prices dict，key=资产名，value=OHLCV DataFrame
     输出：Series，index=日期，values=持有的资产名 (str)
 
-    波动率调整动量策略 + 动态防御资产选择：
+    波动率调整动量策略 + 动态防御资产选择 + 相对 SPY 动量过滤：
     1. 计算每个资产的动量（12 个月）
     2. 计算每个资产的波动率（6 个月）
     3. 使用动量/波动率作为评分指标
-    4. 如果最强进攻型资产评分 > 阈值 → 持有它
+    4. 如果最强进攻型资产动量 >= SPY 动量 → 持有它
     5. 否则 → 切换到防御型资产中波动率调整动量最强的
     6. 每月初再平衡一次
     """
@@ -84,8 +84,9 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
             best_off = CASH
             best_off_mom = -1
 
-        # 绝对动量过滤：动量超过阈值才持有进攻型
-        if best_off_mom > MOM_THRESHOLD:
+        # 相对动量过滤：进攻型资产动量需超过或等于 SPY 动量
+        spy_mom = row_mom.get("SPY", -1) if "SPY" in row_mom else 0
+        if best_off_mom >= spy_mom + SPY_OUTPERFORM_MARGIN:
             current_asset = best_off
         else:
             # 切换到防御型资产中波动率调整动量最强的
