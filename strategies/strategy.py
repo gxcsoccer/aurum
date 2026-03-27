@@ -1,6 +1,6 @@
 """
 Aurum 多资产轮动策略 — agent 可以修改此文件的所有内容
-当前策略：多期动量加权 + 进攻型波动率调整 + 防御型纯动量 + 防御型 63 日均线趋势过滤
+当前策略：多期动量加权 + 进攻型波动率调整 + 防御型纯动量 + 防御型 63 日均线趋势过滤 + 市场波动率过滤
 """
 import pandas as pd
 import numpy as np
@@ -10,6 +10,7 @@ MOM_PERIODS = [21, 63, 126, 252]  # 多期动量：1/3/6/12 个月
 MOM_WEIGHTS = [1, 2, 4, 6]        # 权重分配（短期到长期递增）
 VOL_LOOKBACK = 210                # 波动率计算期（~10 个月）
 SPY_OUTPERFORM_MARGIN = 0.0       # 进攻型资产需要超过 SPY 动量的幅度
+VOL_THRESHOLD = 0.01              # 高波动期额外要求的超额收益门槛
 CASH = "SHY"                      # 现金等价资产
 OFFENSIVE = ["SPY", "QQQ", "EFA", "EEM"]   # 进攻型资产
 DEFENSIVE = ["TLT", "GLD", "SHY"]          # 防御型资产
@@ -21,15 +22,16 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
     输入：prices dict，key=资产名，value=OHLCV DataFrame
     输出：Series，index=日期，values=持有的资产名 (str)
 
-    多期动量加权策略 + 进攻型波动率调整 + 防御型纯动量 + 防御型趋势过滤：
+    多期动量加权策略 + 进攻型波动率调整 + 防御型纯动量 + 防御型趋势过滤 + 市场波动率过滤：
     1. 计算每个资产的多期动量（1/3/6/12 个月加权）
     2. 计算每个资产的波动率（10 个月）
     3. 进攻型资产使用动量/波动率作为评分指标
     4. 防御型资产使用纯动量作为评分指标
     5. 防御型资产需价格高于 63 日均线才考虑持有（否则切到 SHY）
-    6. 如果最强进攻型资产动量 >= SPY 动量 → 持有它
-    7. 否则 → 切换到防御型资产中纯动量最强的（需通过趋势过滤）
-    8. 每月初再平衡一次
+    6. 计算市场平均波动率，高于中位数时提高进攻门槛
+    7. 如果最强进攻型资产动量 >= SPY 动量 + 波动率调整 → 持有它
+    8. 否则 → 切换到防御型资产中纯动量最强的（需通过趋势过滤）
+    9. 每月初再平衡一次
     """
     # 获取公共日期
     all_dates = None
@@ -44,7 +46,7 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
     # 计算每个资产的多期加权动量和波动率（shift(1) 防止前视偏差）
     momentums = {}
     volatilities = {}
-    ma_63 = {}  # 63 日均线用于防御型资产趋势过滤
+    ma_63 = {}
     
     for name, df in prices.items():
         close = df["close"].reindex(all_dates)
@@ -74,6 +76,11 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
     # 防御型资产使用纯动量评分（不除以波动率）
     def_score_df = mom_df[DEFENSIVE]
 
+    # 计算市场平均波动率用于波动率过滤（使用进攻型资产平均波动率）
+    market_vol = vol_df[OFFENSIVE].mean(axis=1)
+    # 计算滚动中位数（1 年窗口），shift(1) 防止前视
+    market_vol_median = market_vol.rolling(252).median().shift(1)
+
     # 生成信号
     signals = pd.Series(CASH, index=all_dates)
     current_asset = CASH
@@ -102,7 +109,17 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
 
         # 相对动量过滤：进攻型资产动量需超过或等于 SPY 动量
         spy_mom = row_mom.get("SPY", -1) if "SPY" in row_mom else 0
-        if best_off_mom >= spy_mom + SPY_OUTPERFORM_MARGIN:
+        
+        # 波动率过滤：如果市场波动率高于中位数，提高进攻门槛
+        vol_adjustment = 0.0
+        if date in market_vol.index and date in market_vol_median.index:
+            current_market_vol = market_vol.loc[date]
+            median_market_vol = market_vol_median.loc[date]
+            if pd.notna(current_market_vol) and pd.notna(median_market_vol):
+                if current_market_vol > median_market_vol:
+                    vol_adjustment = VOL_THRESHOLD  # 高波动期要求更高超额收益
+        
+        if best_off_mom >= spy_mom + SPY_OUTPERFORM_MARGIN + vol_adjustment:
             current_asset = best_off
         else:
             # 切换到防御型资产中纯动量最强的（需通过 63 日均线趋势过滤）
@@ -116,12 +133,12 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
                         selected_def = CASH
                         break
                     
-                    # 检查防御型资产是否高于 63 日均线
-                    asset_price = mom_df.loc[date, def_asset]  # 这里用 momentum 近似代表价格趋势
+                    # 检查防御型资产是否高于 63 日均线（使用 shift(1) 的收盘价防止前视）
+                    close_series = prices[def_asset]["close"].reindex(all_dates).shift(1)
+                    close_price = close_series.loc[date] if date in close_series.index else None
                     asset_ma = ma_df.loc[date, def_asset]
-                    close_price = prices[def_asset]["close"].loc[date] if date in prices[def_asset]["close"].index else None
                     
-                    if close_price is not None and close_price > asset_ma:
+                    if close_price is not None and pd.notna(asset_ma) and close_price > asset_ma:
                         selected_def = def_asset
                         break
                 
