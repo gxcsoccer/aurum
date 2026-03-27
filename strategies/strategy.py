@@ -1,6 +1,6 @@
 """
 Aurum 多资产轮动策略 — agent 可以修改此文件的所有内容
-当前策略：Dual Momentum + 短期动量过滤 (放宽阈值) + 波动率调整动量排名 + 退出滞后效应 + 防御资产波动率调整动量选择
+当前策略：Dual Momentum + 短期动量过滤 (放宽阈值) + 波动率调整动量排名 + 退出滞后效应 + 防御资产基于进攻动量强度选择
 """
 import pandas as pd
 import numpy as np
@@ -82,6 +82,40 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
             best_off_mom_long = -1
             best_off_mom_short = 0
 
+        # 防御资产选择逻辑：基于进攻型资产动量强度选择不同防御资产
+        def select_defensive(row_vol_adj, row_long, offensive_mom_long):
+            """
+            根据进攻型资产动量强度选择防御资产：
+            - 进攻动量温和下跌 (0 > mom > -5%): 选 TLT (通常在温和下跌中表现好)
+            - 进攻动量严重下跌 (mom <= -5%): 选 GLD (危机对冲)
+            - 否则：选波动率调整动量最强的防御资产
+            """
+            def_vol_adj = {k: row_vol_adj[k] for k in DEFENSIVE if k in row_vol_adj}
+            
+            if not def_vol_adj:
+                return CASH
+            
+            # 基于进攻型资产长期动量强度选择防御资产
+            if offensive_mom_long < -0.05:
+                # 严重下跌，优先 GLD 作为危机对冲
+                if "GLD" in def_vol_adj:
+                    return "GLD"
+                elif "TLT" in def_vol_adj:
+                    return "TLT"
+                else:
+                    return CASH
+            elif offensive_mom_long < 0:
+                # 温和下跌，优先 TLT (通常与股市负相关)
+                if "TLT" in def_vol_adj:
+                    return "TLT"
+                elif "GLD" in def_vol_adj:
+                    return "GLD"
+                else:
+                    return CASH
+            else:
+                # 进攻动量为正但短期动量触发避险，选波动率调整动量最强的防御资产
+                return max(def_vol_adj, key=def_vol_adj.get)
+
         # 滞后效应逻辑：退出条件比进入条件更严格
         if in_offensive:
             # 已经在进攻型资产中，只有当长期和短期动量同时转负时才退出
@@ -90,12 +124,7 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
                 current_asset = best_off
             else:
                 # 两个条件都失败，切换到防御
-                # 改进：防御资产使用波动率调整动量选择，减少噪音并提高风险调整后收益
-                def_vol_adj = {k: row_vol_adj[k] for k in DEFENSIVE if k in row_vol_adj}
-                if def_vol_adj:
-                    current_asset = max(def_vol_adj, key=def_vol_adj.get)
-                else:
-                    current_asset = CASH
+                current_asset = select_defensive(row_vol_adj, row_long, best_off_mom_long)
                 in_offensive = False
         else:
             # 当前在防御中，需要两个条件都满足才能进入进攻
@@ -103,13 +132,8 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
                 current_asset = best_off
                 in_offensive = True
             else:
-                # 切换到防御型资产中选波动率调整动量最强的
-                # 改进：防御资产使用波动率调整动量选择，减少噪音并提高风险调整后收益
-                def_vol_adj = {k: row_vol_adj[k] for k in DEFENSIVE if k in row_vol_adj}
-                if def_vol_adj:
-                    current_asset = max(def_vol_adj, key=def_vol_adj.get)
-                else:
-                    current_asset = CASH
+                # 切换到防御型资产
+                current_asset = select_defensive(row_vol_adj, row_long, best_off_mom_long)
                 in_offensive = False
 
         signals.iloc[i] = current_asset
