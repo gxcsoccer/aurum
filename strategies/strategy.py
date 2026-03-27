@@ -1,6 +1,6 @@
 """
 Aurum 多资产轮动策略 — agent 可以修改此文件的所有内容
-当前策略：Dual Momentum + 短期动量过滤 (放宽阈值) + 波动率调整动量排名
+当前策略：Dual Momentum + 短期动量过滤 (放宽阈值) + 波动率调整动量排名 + 退出滞后效应
 """
 import pandas as pd
 import numpy as np
@@ -55,6 +55,7 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
     # 生成信号
     signals = pd.Series(CASH, index=all_dates)
     current_asset = CASH
+    in_offensive = False  # 追踪当前是否在进攻型资产中
 
     for i, date in enumerate(all_dates):
         # 月度再平衡
@@ -70,7 +71,7 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
             signals.iloc[i] = current_asset
             continue
 
-        # 选进攻型中波动率调整动量最强的（而非原始动量）
+        # 选进攻型中波动率调整动量最强的
         off_mom = {k: row_vol_adj[k] for k in OFFENSIVE if k in row_vol_adj}
         if off_mom:
             best_off = max(off_mom, key=off_mom.get)
@@ -81,16 +82,33 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
             best_off_mom_long = -1
             best_off_mom_short = 0
 
-        # 双重检查：长期动量必须为正，且短期动量不能太负（阈值已放宽）
-        if best_off_mom_long > 0 and best_off_mom_short > SHORT_MOM_THRESHOLD:
-            current_asset = best_off
-        else:
-            # 切换到防御型资产中选长期动量最强的
-            def_mom = {k: row_long[k] for k in DEFENSIVE if k in row_long}
-            if def_mom:
-                current_asset = max(def_mom, key=def_mom.get)
+        # 滞后效应逻辑：退出条件比进入条件更严格
+        if in_offensive:
+            # 已经在进攻型资产中，只有当长期和短期动量同时转负时才退出
+            if best_off_mom_long > 0 or best_off_mom_short > SHORT_MOM_THRESHOLD:
+                # 至少一个条件满足，继续保持进攻
+                current_asset = best_off
             else:
-                current_asset = CASH
+                # 两个条件都失败，切换到防御
+                def_mom = {k: row_long[k] for k in DEFENSIVE if k in row_long}
+                if def_mom:
+                    current_asset = max(def_mom, key=def_mom.get)
+                else:
+                    current_asset = CASH
+                in_offensive = False
+        else:
+            # 当前在防御中，需要两个条件都满足才能进入进攻
+            if best_off_mom_long > 0 and best_off_mom_short > SHORT_MOM_THRESHOLD:
+                current_asset = best_off
+                in_offensive = True
+            else:
+                # 切换到防御型资产中选长期动量最强的
+                def_mom = {k: row_long[k] for k in DEFENSIVE if k in row_long}
+                if def_mom:
+                    current_asset = max(def_mom, key=def_mom.get)
+                else:
+                    current_asset = CASH
+                in_offensive = False
 
         signals.iloc[i] = current_asset
 
