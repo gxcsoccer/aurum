@@ -3,10 +3,11 @@ import numpy as np
 
 # ============ 参数区 ============
 LOOKBACK = 252          # 动量回望期（~12 个月）
-VOL_LOOKBACK = 21       # 波动率回望期（~1 个月）- 变异：从 60 日缩短至 21 日，更灵敏反应风险
+VOL_LOOKBACK = 21       # 波动率回望期（~1 个月）
 CASH = "SHY"            # 现金等价资产
 OFFENSIVE = ["SPY", "QQQ", "EFA", "EEM"]   # 进攻型资产
 DEFENSIVE = ["TLT", "GLD", "SHY"]          # 防御型资产
+MOMENTUM_THRESHOLD = -0.05  # 动量严重程度阈值（-5%），低于此值才切换防御
 
 # ============ 信号逻辑区 ============
 def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
@@ -14,11 +15,11 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
     输入：prices dict，key=资产名，value=OHLCV DataFrame
     输出：Series，index=日期，values=持有的资产名 (str)
 
-    变异：缩短波动率回望期 (60 日 → 21 日)
+    变异：添加动量严重程度过滤
     1. 计算每个资产的动量和波动率
     2. 评分 = 动量 / 波动率
     3. 在进攻型资产中选评分最高的
-    4. 如果最强资产的原始动量为正 → 持有它
+    4. 如果最强资产的原始动量 > -5% → 持有它（容忍小幅负动量）
     5. 否则 → 切换到防御型资产中评分最高的
     6. 每月初再平衡一次
     """
@@ -39,7 +40,7 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
         close = df["close"].reindex(all_dates)
         # 动量：12 个月收益率
         momentums[name] = close.pct_change(LOOKBACK).shift(1)
-        # 波动率：21 日收益率标准差（变异：从 60 日缩短至 21 日）
+        # 波动率：21 日收益率标准差
         volatilities[name] = close.pct_change().rolling(VOL_LOOKBACK).std().shift(1)
 
     mom_df = pd.DataFrame(momentums).reindex(all_dates)
@@ -75,8 +76,8 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
             best_off = CASH
             best_off_mom = -1
 
-        # 绝对动量过滤：正动量才持有进攻型 (使用原始动量确保收益为正)
-        if best_off_mom > 0:
+        # 动量严重程度过滤：只有动量 < -5% 才切换防御（容忍小幅负动量）
+        if best_off_mom > MOMENTUM_THRESHOLD:
             current_asset = best_off
         else:
             # 选防御型中评分最高的
