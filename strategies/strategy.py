@@ -1,6 +1,6 @@
 """
 Aurum 多资产轮动策略 — agent 可以修改此文件的所有内容
-当前策略：波动率调整动量（Volatility-Adjusted Momentum）
+当前策略：波动率调整动量 + 动态防御资产选择
 """
 import pandas as pd
 import numpy as np
@@ -19,12 +19,12 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
     输入：prices dict，key=资产名，value=OHLCV DataFrame
     输出：Series，index=日期，values=持有的资产名 (str)
 
-    波动率调整动量策略：
+    波动率调整动量策略 + 动态防御资产选择：
     1. 计算每个资产的动量（12 个月）
     2. 计算每个资产的波动率（6 个月）
     3. 使用动量/波动率作为评分指标
     4. 如果最强进攻型资产评分 > 阈值 → 持有它
-    5. 否则 → 切换到现金 (SHY)
+    5. 否则 → 切换到防御型资产中波动率调整动量最强的
     6. 每月初再平衡一次
     """
     # 获取公共日期
@@ -88,8 +88,12 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
         if best_off_mom > MOM_THRESHOLD:
             current_asset = best_off
         else:
-            # 切换到现金
-            current_asset = CASH
+            # 切换到防御型资产中波动率调整动量最强的
+            def_score = {k: row_score[k] for k in DEFENSIVE if k in row_score}
+            if def_score:
+                current_asset = max(def_score, key=def_score.get)
+            else:
+                current_asset = CASH
 
         signals.iloc[i] = current_asset
 
