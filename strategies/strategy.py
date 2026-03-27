@@ -1,6 +1,6 @@
 """
 Aurum 多资产轮动策略 — agent 可以修改此文件的所有内容
-当前策略：Dual Momentum + 短期动量过滤 (放宽阈值) + 波动率调整动量排名 + 退出滞后效应 + 防御资产基于进攻动量强度选择 + 自适应防御阈值
+当前策略：Dual Momentum + 短期动量过滤 + 波动率调整动量排名 + 退出滞后效应 + 防御资产基于进攻动量强度选择 + 自适应防御阈值 + 进攻资产波动率上限过滤
 """
 import pandas as pd
 import numpy as np
@@ -9,7 +9,7 @@ import numpy as np
 LOOKBACK_LONG = 252       # 长期动量回望期（~12 个月）
 LOOKBACK_SHORT = 63       # 短期动量回望期（~3 个月）
 VOL_LOOKBACK = 63         # 波动率计算回望期（~3 个月）
-SHORT_MOM_THRESHOLD = -0.10  # 短期动量阈值，低于此值则避险（从 -5% 放宽到 -10%）
+SHORT_MOM_THRESHOLD = -0.10  # 短期动量阈值，低于此值则避险
 CASH = "SHY"              # 现金等价资产
 OFFENSIVE = ["SPY", "QQQ", "EFA", "EEM"]  # 进攻型资产
 DEFENSIVE = ["TLT", "GLD", "SHY"]  # 防御型资产
@@ -20,6 +20,9 @@ VOL_PERCENTILE_LOW = 0.30   # 波动率低分位阈值
 DEF_THRESHOLD_HIGH_VOL = -0.03  # 高波动时防御切换阈值（更宽松，-3% 就切防御）
 DEF_THRESHOLD_LOW_VOL = -0.08   # 低波动时防御切换阈值（更严格，-8% 才切防御）
 DEF_THRESHOLD_NORMAL = -0.05    # 正常波动时防御切换阈值（-5%）
+
+# 进攻资产波动率上限参数
+VOL_RATIO_THRESHOLD = 1.30  # 如果最佳资产波动率超过次佳资产的 30%，则考虑切换
 
 # ============ 信号逻辑区 ============
 def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
@@ -80,6 +83,7 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
         row_long = mom_long_df.loc[date].dropna()
         row_short = mom_short_df.loc[date].dropna()
         row_vol_adj = vol_adj_mom_df.loc[date].dropna()
+        row_vol = vol_df.loc[date].dropna()
         
         if len(row_long) == 0:
             signals.iloc[i] = current_asset
@@ -88,13 +92,29 @@ def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
         # 选进攻型中波动率调整动量最强的
         off_mom = {k: row_vol_adj[k] for k in OFFENSIVE if k in row_vol_adj}
         if off_mom:
-            best_off = max(off_mom, key=off_mom.get)
+            # 按波动率调整动量排序
+            sorted_off = sorted(off_mom.items(), key=lambda x: x[1], reverse=True)
+            best_off = sorted_off[0][0]
             best_off_mom_long = row_long.get(best_off, -1) if best_off in row_long else -1
             best_off_mom_short = row_short.get(best_off, 0) if best_off in row_short else 0
+            best_off_vol = row_vol.get(best_off, 0) if best_off in row_vol else 0
+            
+            # 波动率上限过滤：如果最佳资产波动率显著高于其他可行选项，切换到波动率更低的资产
+            if len(sorted_off) >= 2:
+                second_best = sorted_off[1][0]
+                second_best_vol = row_vol.get(second_best, 0) if second_best in row_vol else 0
+                
+                # 如果最佳资产波动率超过次佳资产 30%，且次佳资产动量仍然为正，则切换
+                if best_off_vol > second_best_vol * VOL_RATIO_THRESHOLD and row_long.get(second_best, 0) > 0:
+                    best_off = second_best
+                    best_off_mom_long = row_long.get(best_off, -1)
+                    best_off_mom_short = row_short.get(best_off, 0)
+                    best_off_vol = row_vol.get(best_off, 0)
         else:
             best_off = CASH
             best_off_mom_long = -1
             best_off_mom_short = 0
+            best_off_vol = 0
 
         # 根据当前 SPY 波动率状态确定防御切换阈值
         current_spy_vol = vol_df.loc[date, "SPY"] if "SPY" in vol_df.columns else 0
