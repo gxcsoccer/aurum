@@ -1,152 +1,342 @@
 """
-Aurum 多资产轮动策略 — agent 可以修改此文件的所有内容
-当前策略：多期动量加权 + 进攻型波动率调整 + 防御型纯动量 + 防御型 63 日均线趋势过滤 + 市场波动率过滤
+Aurum 多资产轮动策略 — 自动组装自因子库
+因子数量: 5
+组装时间: 2026-04-08T05:38:44.001769
 """
 import pandas as pd
 import numpy as np
 
-# ============ 参数区 ============
-MOM_PERIODS = [21, 63, 126, 252]  # 多期动量：1/3/6/12 个月
-MOM_WEIGHTS = [1, 2, 4, 6]        # 权重分配（短期到长期递增）
-VOL_LOOKBACK = 210                # 波动率计算期（~10 个月）
-SPY_OUTPERFORM_MARGIN = 0.0       # 进攻型资产需要超过 SPY 动量的幅度
-VOL_THRESHOLD = 0.01              # 高波动期额外要求的超额收益门槛
-CASH = "SHY"                      # 现金等价资产
-OFFENSIVE = ["SPY", "QQQ", "EFA", "EEM"]   # 进攻型资产
-DEFENSIVE = ["TLT", "GLD", "SHY"]          # 防御型资产
-DEFENSIVE_MA_PERIOD = 63          # 防御型资产趋势确认均线周期
+CASH = "SHY"
+OFFENSIVE = ['SPY', 'QQQ', 'EFA', 'EEM']
+DEFENSIVE = ['TLT', 'GLD', 'SHY']
 
-# ============ 信号逻辑区 ============
-def generate_signals(prices: dict[str, pd.DataFrame]) -> pd.Series:
-    """
-    输入：prices dict，key=资产名，value=OHLCV DataFrame
-    输出：Series，index=日期，values=持有的资产名 (str)
+# ════════════════════════════════════════════
+#  内联因子函数
+# ════════════════════════════════════════════
 
-    多期动量加权策略 + 进攻型波动率调整 + 防御型纯动量 + 防御型趋势过滤 + 市场波动率过滤：
-    1. 计算每个资产的多期动量（1/3/6/12 个月加权）
-    2. 计算每个资产的波动率（10 个月）
-    3. 进攻型资产使用动量/波动率作为评分指标
-    4. 防御型资产使用纯动量作为评分指标
-    5. 防御型资产需价格高于 63 日均线才考虑持有（否则切到 SHY）
-    6. 计算市场平均波动率，高于中位数时提高进攻门槛
-    7. 如果最强进攻型资产动量 >= SPY 动量 + 波动率调整 → 持有它
-    8. 否则 → 切换到防御型资产中纯动量最强的（需通过趋势过滤）
-    9. 每月初再平衡一次
+# ── Factor: base_defensive_score ──
+"""
+Factor: Pure Multi-Period Momentum (Defensive)
+Category: defensive
+Description: 多期加权纯动量，用于防御型资产评分。
+  不除以波动率，因为防御型资产波动率本身较低，除以后会放大噪音。
+"""
+import pandas as pd
+import numpy as np
+
+MOM_PERIODS = [21, 63, 126, 252]
+MOM_WEIGHTS = [1, 2, 4, 6]
+
+
+def compute_base_defensive_score(prices, all_dates, assets):
     """
-    # 获取公共日期
+    Parameters:
+        prices: dict[str, DataFrame]
+        all_dates: DatetimeIndex
+        assets: list[str]
+    Returns:
+        DataFrame(index=all_dates, columns=assets, values=scores)
+    """
+    scores = {}
+    for name in assets:
+        if name not in prices:
+            continue
+        close = prices[name]["close"].reindex(all_dates)
+
+        mom_values = []
+        for period, weight in zip(MOM_PERIODS, MOM_WEIGHTS):
+            mom = close.pct_change(period).shift(1)
+            mom_values.append(mom * weight)
+        scores[name] = sum(mom_values) / sum(MOM_WEIGHTS)
+
+    return pd.DataFrame(scores).reindex(all_dates)
+
+
+# ── Factor: base_ma_filter ──
+"""
+Factor: MA Trend Filter (Defensive)
+Category: filter
+Description: 防御型资产 63 日均线趋势过滤。
+  价格高于 MA 输出 1，低于输出 0。
+  用于过滤趋势向下的防御资产，避免在下跌趋势中持有 TLT/GLD。
+"""
+import pandas as pd
+import numpy as np
+
+MA_PERIOD = 63
+
+
+def compute_base_ma_filter(prices, all_dates, assets):
+    """
+    Parameters:
+        prices: dict[str, DataFrame]
+        all_dates: DatetimeIndex
+        assets: list[str] - 防御型资产列表
+    Returns:
+        DataFrame(index=all_dates, columns=assets, values=0.0 or 1.0)
+    """
+    filters = {}
+    for name in assets:
+        if name not in prices:
+            continue
+        close = prices[name]["close"].reindex(all_dates)
+        ma = close.rolling(MA_PERIOD).mean().shift(1)
+        close_shifted = close.shift(1)
+        filters[name] = (close_shifted > ma).astype(float)
+
+    return pd.DataFrame(filters).reindex(all_dates)
+
+
+# ── Factor: base_market_regime ──
+"""
+Factor: Market Volatility Regime
+Category: regime
+Description: 用进攻型资产平均波动率判断市场环境。
+  波动率高于 1 年滚动中位数时输出 1（高波动），否则 0。
+  高波动期提高进攻门槛，促使策略更早切换到防御。
+"""
+import pandas as pd
+import numpy as np
+
+VOL_LOOKBACK = 210
+
+
+def compute_base_market_regime(prices, all_dates, assets):
+    """
+    Parameters:
+        prices: dict[str, DataFrame]
+        all_dates: DatetimeIndex
+        assets: list[str] - 进攻型资产列表（用于计算市场波动率）
+    Returns:
+        Series(index=all_dates, values=0.0 or 1.0)
+    """
+    vols = []
+    for name in assets:
+        if name not in prices:
+            continue
+        close = prices[name]["close"].reindex(all_dates)
+        returns = close.pct_change().shift(1)
+        vol = returns.rolling(VOL_LOOKBACK).std() * np.sqrt(252)
+        vols.append(vol)
+
+    if not vols:
+        return pd.Series(0.0, index=all_dates)
+
+    market_vol = pd.concat(vols, axis=1).mean(axis=1)
+    median_vol = market_vol.rolling(252).median().shift(1)
+    regime = (market_vol > median_vol).astype(float)
+    regime = regime.fillna(0.0)
+    return regime
+
+
+# ── Factor: base_offensive_score ──
+"""
+Factor: Vol-Adjusted Multi-Period Momentum (Offensive)
+Category: offensive
+Description: 多期加权动量除以波动率，用于进攻型资产评分。
+  动量周期 1/3/6/12 个月，权重 1/2/4/6，波动率 10 个月年化。
+  捕捉趋势强度的同时惩罚高波动资产。
+"""
+import pandas as pd
+import numpy as np
+
+MOM_PERIODS = [21, 63, 126, 252]
+MOM_WEIGHTS = [1, 2, 4, 6]
+VOL_LOOKBACK = 210
+
+
+def compute_base_offensive_score(prices, all_dates, assets):
+    """
+    Parameters:
+        prices: dict[str, DataFrame] - 资产价格数据
+        all_dates: DatetimeIndex - 所有交易日
+        assets: list[str] - 要计算的资产列表
+    Returns:
+        DataFrame(index=all_dates, columns=assets, values=scores)
+    """
+    scores = {}
+    for name in assets:
+        if name not in prices:
+            continue
+        close = prices[name]["close"].reindex(all_dates)
+
+        # 多期加权动量
+        mom_values = []
+        for period, weight in zip(MOM_PERIODS, MOM_WEIGHTS):
+            mom = close.pct_change(period).shift(1)
+            mom_values.append(mom * weight)
+        momentum = sum(mom_values) / sum(MOM_WEIGHTS)
+
+        # 年化波动率
+        returns = close.pct_change().shift(1)
+        vol = returns.rolling(VOL_LOOKBACK).std() * np.sqrt(252)
+
+        # 动量 / 波动率
+        scores[name] = momentum / (vol + 0.0001)
+
+    return pd.DataFrame(scores).reindex(all_dates)
+
+
+# ── Factor: evolved_015_regime_momentum_exhaustion ──
+"""
+Factor: regime_momentum_exhaustion
+Category: regime
+Description: Aggregates momentum acceleration across offensive assets to detect systemic trend exhaustion. High value indicates broad deceleration (high risk).
+"""
+import pandas as pd
+import numpy as np
+
+def compute_evolved_015_regime_momentum_exhaustion(prices, all_dates, assets):
+    """
+    Parameters:
+        prices: dict[str, DataFrame] - key=资产名，value=OHLCV DataFrame
+        all_dates: DatetimeIndex - 所有交易日
+        assets: list[str] - 资产列表 (ignored for regime, uses internal pool)
+    Returns:
+        Series(index=all_dates, values=float) - High value = High Risk
+    """
+    # Define offensive assets for regime calculation
+    offensive_assets = ['SPY', 'QQQ', 'EFA', 'EEM']
+    
+    # Store acceleration signals
+    accel_series = []
+    
+    for asset in offensive_assets:
+        if asset not in prices:
+            continue
+            
+        # Get close prices and align to all_dates
+        close = prices[asset]['close'].reindex(all_dates)
+        
+        # Calculate returns
+        # 3-month (approx 63 days) and 6-month (approx 126 days) momentum
+        ret_3m = close.pct_change(63)
+        ret_6m = close.pct_change(126)
+        
+        # Momentum Acceleration = Short Mom - Long Mom
+        # Positive = Accelerating, Negative = Decelerating
+        accel = ret_3m - ret_6m
+        
+        accel_series.append(accel)
+    
+    if not accel_series:
+        return pd.Series(0.0, index=all_dates)
+    
+    # Combine into DataFrame and take mean across assets
+    accel_df = pd.concat(accel_series, axis=1)
+    mean_accel = accel_df.mean(axis=1)
+    
+    # Normalize using rolling Z-score (252 days) to make signal stationary
+    rolling_mean = mean_accel.rolling(252, min_periods=63).mean()
+    rolling_std = mean_accel.rolling(252, min_periods=63).std()
+    
+    z_score = (mean_accel - rolling_mean) / (rolling_std + 1e-9)
+    
+    # Invert signal: Low/Negative Acceleration = High Risk = High Regime Score
+    # We want high regime score to trigger conservative behavior
+    regime_score = -z_score
+    
+    # Ensure no look-ahead bias
+    regime_score = regime_score.shift(1)
+    
+    # Reindex and fill NaNs
+    regime_score = regime_score.reindex(all_dates)
+    regime_score = regime_score.ffill().fillna(0.0)
+    
+    return regime_score
+
+
+# ════════════════════════════════════════════
+#  组合器 + 信号生成
+# ════════════════════════════════════════════
+
+MOM_PERIODS = [21, 63, 126, 252]
+MOM_WEIGHTS = [1, 2, 4, 6]
+
+def generate_signals(prices):
+    # 计算日期并集
     all_dates = None
     for df in prices.values():
         idx = df.index
         if all_dates is None:
             all_dates = idx
         else:
-            all_dates = all_dates.intersection(idx)
+            all_dates = all_dates.union(idx)
     all_dates = all_dates.sort_values()
 
-    # 计算每个资产的多期加权动量和波动率（shift(1) 防止前视偏差）
+    # 计算所有因子
+    def_base_defensive_score = compute_base_defensive_score(prices, all_dates, DEFENSIVE)
+    filter_base_ma_filter = compute_base_ma_filter(prices, all_dates, DEFENSIVE)
+    regime_base_market_regime = compute_base_market_regime(prices, all_dates, OFFENSIVE)
+    off_base_offensive_score = compute_base_offensive_score(prices, all_dates, OFFENSIVE)
+    regime_evolved_015_regime_momentum_exhaustion = compute_evolved_015_regime_momentum_exhaustion(prices, all_dates, OFFENSIVE)
+
+    # 组合进攻型评分
+    off_score = off_base_offensive_score * 1.0000
+
+    # 组合防御型评分
+    def_score = def_base_defensive_score * 1.0000
+
+    # 市场 regime（0=正常, 1=高风险）
+    regime = (regime_base_market_regime + regime_evolved_015_regime_momentum_exhaustion) / 2
+
+    # 计算原始动量（用于 SPY 对比）
     momentums = {}
-    volatilities = {}
-    ma_63 = {}
-    
     for name, df in prices.items():
         close = df["close"].reindex(all_dates)
-        
-        # 多期动量加权
         mom_values = []
         for period, weight in zip(MOM_PERIODS, MOM_WEIGHTS):
             mom = close.pct_change(period).shift(1)
             mom_values.append(mom * weight)
-        # 加权平均动量
         momentums[name] = sum(mom_values) / sum(MOM_WEIGHTS)
-        
-        # 波动率：10 个月年化波动率
-        returns = close.pct_change().shift(1)
-        volatilities[name] = returns.rolling(VOL_LOOKBACK).std() * np.sqrt(252)
-        
-        # 63 日均线（用于防御型资产趋势过滤）
-        ma_63[name] = close.rolling(DEFENSIVE_MA_PERIOD).mean().shift(1)
-
     mom_df = pd.DataFrame(momentums).reindex(all_dates)
-    vol_df = pd.DataFrame(volatilities).reindex(all_dates)
-    ma_df = pd.DataFrame(ma_63).reindex(all_dates)
-
-    # 计算进攻型资产的波动率调整动量评分
-    off_score_df = mom_df[OFFENSIVE] / (vol_df[OFFENSIVE] + 0.0001)
-
-    # 防御型资产使用纯动量评分（不除以波动率）
-    def_score_df = mom_df[DEFENSIVE]
-
-    # 计算市场平均波动率用于波动率过滤（使用进攻型资产平均波动率）
-    market_vol = vol_df[OFFENSIVE].mean(axis=1)
-    # 计算滚动中位数（1 年窗口），shift(1) 防止前视
-    market_vol_median = market_vol.rolling(252).median().shift(1)
 
     # 生成信号
     signals = pd.Series(CASH, index=all_dates)
     current_asset = CASH
 
     for i, date in enumerate(all_dates):
-        # 月度再平衡：仅在每月第一个交易日调仓
+        # 月度再平衡
         if i > 0 and date.month == all_dates[i - 1].month:
             signals.iloc[i] = current_asset
             continue
 
-        row_off_score = off_score_df.loc[date].dropna()
-        row_mom = mom_df.loc[date].dropna()
-        row_def_score = def_score_df.loc[date].dropna()
-        
-        if len(row_off_score) == 0:
+        row_off = off_score.loc[date].dropna() if date in off_score.index else pd.Series(dtype=float)
+        row_mom = mom_df.loc[date].dropna() if date in mom_df.index else pd.Series(dtype=float)
+        row_def = def_score.loc[date].dropna() if date in def_score.index else pd.Series(dtype=float)
+
+        if len(row_off) == 0:
             signals.iloc[i] = current_asset
             continue
 
-        # 选进攻型资产中波动率调整动量最强的
-        if len(row_off_score) > 0:
-            best_off = row_off_score.idxmax()
-            best_off_mom = row_mom.get(best_off, -1)
-        else:
-            best_off = CASH
-            best_off_mom = -1
+        # 选进攻型最强资产
+        best_off = row_off.idxmax()
+        best_off_mom = row_mom.get(best_off, -1)
+        spy_mom = row_mom.get("SPY", 0)
 
-        # 相对动量过滤：进攻型资产动量需超过或等于 SPY 动量
-        spy_mom = row_mom.get("SPY", -1) if "SPY" in row_mom else 0
-        
-        # 波动率过滤：如果市场波动率高于中位数，提高进攻门槛
-        vol_adjustment = 0.0
-        if date in market_vol.index and date in market_vol_median.index:
-            current_market_vol = market_vol.loc[date]
-            median_market_vol = market_vol_median.loc[date]
-            if pd.notna(current_market_vol) and pd.notna(median_market_vol):
-                if current_market_vol > median_market_vol:
-                    vol_adjustment = VOL_THRESHOLD  # 高波动期要求更高超额收益
-        
-        if best_off_mom >= spy_mom + SPY_OUTPERFORM_MARGIN + vol_adjustment:
+        # 波动率调整门槛
+        vol_adj = 0.01 if (date in regime.index and pd.notna(regime.loc[date]) and regime.loc[date] > 0.5) else 0.0
+
+        if best_off_mom >= spy_mom + 0.0 + vol_adj:
             current_asset = best_off
         else:
-            # 切换到防御型资产中纯动量最强的（需通过 63 日均线趋势过滤）
-            if len(row_def_score) > 0:
-                # 按动量排序防御型资产
-                def_sorted = row_def_score.sort_values(ascending=False)
-                selected_def = None
-                
-                for def_asset in def_sorted.index:
-                    if def_asset == CASH:
-                        selected_def = CASH
+            # 防御型选择（带 filter）
+            if len(row_def) > 0:
+                def_sorted = row_def.sort_values(ascending=False)
+                selected = None
+                for asset in def_sorted.index:
+                    if asset == CASH:
+                        selected = CASH
                         break
-                    
-                    # 检查防御型资产是否高于 63 日均线（使用 shift(1) 的收盘价防止前视）
-                    close_series = prices[def_asset]["close"].reindex(all_dates).shift(1)
-                    close_price = close_series.loc[date] if date in close_series.index else None
-                    asset_ma = ma_df.loc[date, def_asset]
-                    
-                    if close_price is not None and pd.notna(asset_ma) and close_price > asset_ma:
-                        selected_def = def_asset
+                    # 应用所有 filter
+                    pass_filter = True
+                    if date in filter_base_ma_filter.index and asset in filter_base_ma_filter.columns:
+                        if pd.notna(filter_base_ma_filter.loc[date, asset]) and filter_base_ma_filter.loc[date, asset] < 0.5:
+                            pass_filter = False
+                    if pass_filter:
+                        selected = asset
                         break
-                
-                if selected_def is None:
-                    # 所有防御资产都在 63 日均线下方，切换到 SHY
-                    current_asset = CASH
-                else:
-                    current_asset = selected_def
+                current_asset = selected if selected else CASH
             else:
                 current_asset = CASH
 

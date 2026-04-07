@@ -1,0 +1,50 @@
+cash: SHY
+combiner:
+  rebalance: monthly
+  spy_outperform_margin: 0.0
+  vol_threshold: 0.01
+defensive:
+- TLT
+- GLD
+- SHY
+evolution:
+  history_window: 30
+  iterations: 50
+  max_correlation: 0.85
+  min_ic_ir: 0.05
+factors:
+  base_defensive_score:
+    category: defensive
+    enabled: true
+    file: factors/base_defensive_score.py
+    scope: defensive
+    weight: 1.0
+  base_ma_filter:
+    category: filter
+    enabled: true
+    file: factors/base_ma_filter.py
+    scope: defensive
+    weight: 1.0
+  base_market_regime:
+    category: regime
+    enabled: true
+    file: factors/base_market_regime.py
+    scope: offensive
+    weight: 1.0
+  base_offensive_score:
+    category: offensive
+    enabled: true
+    file: factors/base_offensive_score.py
+    scope: offensive
+    weight: 1.0
+  evolved_015_regime_momentum_exhaustion:
+    category: regime
+    enabled: true
+    file: factors/evolved_015_regime_momentum_exhaustion.py
+    scope: offensive
+    weight: 1.0
+offensive:
+- SPY
+- QQQ
+- EFA
+- EEM
