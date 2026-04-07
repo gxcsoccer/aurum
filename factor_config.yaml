@@ -49,6 +49,12 @@ factors:
     file: factors/evolved_020_offensive_trend_consistency.py
     scope: offensive
     weight: 1.0
+  evolved_036_correlation_velocity_regime:
+    category: regime
+    enabled: true
+    file: factors/evolved_036_correlation_velocity_regime.py
+    scope: offensive
+    weight: 1.0
 offensive:
 - SPY
 - QQQ
