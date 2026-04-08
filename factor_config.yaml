@@ -43,6 +43,12 @@ factors:
     file: factors/evolved_015_regime_momentum_exhaustion.py
     scope: offensive
     weight: 1.0
+  evolved_020_cross_asset_tlt_leading_signal:
+    category: regime
+    enabled: true
+    file: factors/evolved_020_cross_asset_tlt_leading_signal.py
+    scope: offensive
+    weight: 1.0
   evolved_020_offensive_trend_consistency:
     category: offensive
     enabled: true
