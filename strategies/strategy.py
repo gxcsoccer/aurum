@@ -1,7 +1,7 @@
 """
 Aurum 多资产轮动策略 — 自动组装自因子库
-因子数量: 11
-组装时间: 2026-04-09T03:07:09.147231
+因子数量: 12
+组装时间: 2026-04-09T03:17:28.978695
 """
 import pandas as pd
 import numpy as np
@@ -651,6 +651,57 @@ def compute_evolved_044_evolved_043_defensive_vol_rati(prices, all_dates, assets
     
     return signal
 
+# ── Factor: evolved_054_range_expansion_momentum ──
+"""
+Factor: range_expansion_momentum
+Category: offensive
+Description: 捕捉交易区间压缩后的扩张信号——区间扩张表明机构活动增加，往往先于持续性方向突破，与基于收益率的波动率因子正交（区间可以宽但收盘接近，或区间窄但跳空），提供"能量积蓄"的独立信息。
+"""
+import pandas as pd
+import numpy as np
+
+def compute_evolved_054_range_expansion_momentum(prices, all_dates, assets):
+    """
+    Parameters:
+        prices: dict[str, DataFrame] - key=资产名，value=OHLCV DataFrame
+        all_dates: DatetimeIndex - 所有交易日（已排序）
+        assets: list[str] - 要计算的资产列表
+    Returns:
+        DataFrame(index=all_dates, columns=assets, values=float scores)
+    """
+    scores = pd.DataFrame(index=all_dates, columns=assets, dtype=float)
+    
+    for asset in assets:
+        if asset not in prices:
+            scores[asset] = np.nan
+            continue
+        
+        df = prices[asset].reindex(all_dates)
+        high = df['high']
+        low = df['low']
+        close = df['close']
+        
+        # 交易区间（高 - 低）
+        tr = high - low
+        
+        # 区间相对扩张度：当前区间 / 20 日均区间
+        # 使用 min_periods=10 确保有足够数据
+        tr_ma = tr.rolling(20, min_periods=10).mean()
+        tr_ratio = tr / tr_ma
+        
+        # 动量成分（20 日收益率）
+        momentum = close.pct_change(20)
+        
+        # 组合：区间扩张 × 动量方向
+        # 区间扩张 + 正动量 = 高进攻分数（突破向上）
+        # 区间扩张 + 负动量 = 低进攻分数（突破向下）
+        # 区间压缩 = 低分数（方向不明）
+        score = momentum.shift(1) * tr_ratio.shift(1)
+        
+        scores[asset] = score
+    
+    return scores
+
 
 # ════════════════════════════════════════════
 #  组合器 + 信号生成
@@ -682,9 +733,10 @@ def generate_signals(prices):
     regime_evolved_020_cross_asset_tlt_leading_signal = compute_evolved_020_cross_asset_tlt_leading_signal(prices, all_dates, OFFENSIVE)
     regime_evolved_022_yield_curve_regime = compute_evolved_022_yield_curve_regime(prices, all_dates, OFFENSIVE)
     regime_evolved_044_evolved_043_defensive_vol_rati = compute_evolved_044_evolved_043_defensive_vol_rati(prices, all_dates, OFFENSIVE)
+    off_evolved_054_range_expansion_momentum = compute_evolved_054_range_expansion_momentum(prices, all_dates, OFFENSIVE)
 
     # 组合进攻型评分
-    off_score = off_base_offensive_score * 0.5000 + off_evolved_020_offensive_trend_consistency * 0.5000
+    off_score = off_base_offensive_score * 0.3333 + off_evolved_020_offensive_trend_consistency * 0.3333 + off_evolved_054_range_expansion_momentum * 0.3333
 
     # 组合防御型评分
     def_score = def_base_defensive_score * 1.0000

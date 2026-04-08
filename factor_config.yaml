@@ -79,6 +79,12 @@ factors:
     file: factors/evolved_053_defensive_leadership_persisten.py
     scope: offensive
     weight: 1.0
+  evolved_054_range_expansion_momentum:
+    category: offensive
+    enabled: true
+    file: factors/evolved_054_range_expansion_momentum.py
+    scope: offensive
+    weight: 1.0
 offensive:
 - SPY
 - QQQ
