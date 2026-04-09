@@ -43,22 +43,10 @@ factors:
     file: factors/evolved_015_regime_momentum_exhaustion.py
     scope: offensive
     weight: 1.0
-  evolved_020_cross_asset_tlt_leading_signal:
-    category: regime
-    enabled: true
-    file: factors/evolved_020_cross_asset_tlt_leading_signal.py
-    scope: offensive
-    weight: 1.0
   evolved_020_offensive_trend_consistency:
     category: offensive
     enabled: true
     file: factors/evolved_020_offensive_trend_consistency.py
-    scope: offensive
-    weight: 1.0
-  evolved_022_yield_curve_regime:
-    category: regime
-    enabled: true
-    file: factors/evolved_022_yield_curve_regime.py
     scope: offensive
     weight: 1.0
   evolved_036_correlation_velocity_regime:
@@ -67,22 +55,10 @@ factors:
     file: factors/evolved_036_correlation_velocity_regime.py
     scope: offensive
     weight: 1.0
-  evolved_044_evolved_043_defensive_vol_rati:
-    category: regime
-    enabled: true
-    file: factors/evolved_044_evolved_043_defensive_vol_rati.py
-    scope: offensive
-    weight: 1.0
   evolved_053_defensive_leadership_persisten:
     category: regime
     enabled: true
     file: factors/evolved_053_defensive_leadership_persisten.py
-    scope: offensive
-    weight: 1.0
-  evolved_054_range_expansion_momentum:
-    category: offensive
-    enabled: true
-    file: factors/evolved_054_range_expansion_momentum.py
     scope: offensive
     weight: 1.0
 offensive:

@@ -1,7 +1,7 @@
 """
 Aurum 多资产轮动策略 — 自动组装自因子库
-因子数量: 12
-组装时间: 2026-04-09T03:17:28.978695
+因子数量: 8
+组装时间: 2026-04-08T06:08:13.441440
 """
 import pandas as pd
 import numpy as np
@@ -479,229 +479,6 @@ def compute_evolved_053_defensive_leadership_persisten(prices, all_dates, assets
     
     return regime_signal
 
-# ── Factor: evolved_020_cross_asset_tlt_leading_signal ──
-"""
-Factor: cross_asset_tlt_leading_signal
-Category: regime
-Description: 使用 TLT 动量变化作为进攻型资产的领先指标——TLT 动量下降预示风险偏好上升（应进攻），TLT 动量上升预示风险规避（应保守）。捕捉跨资产领先关系而非简单相关性。
-"""
-import pandas as pd
-import numpy as np
-
-def compute_evolved_020_cross_asset_tlt_leading_signal(prices, all_dates, assets):
-    """
-    Parameters:
-        prices: dict[str, DataFrame] - key=资产名，value=OHLCV DataFrame
-        all_dates: DatetimeIndex - 所有交易日（已排序）
-        assets: list[str] - 要计算的资产列表
-    Returns:
-        regime 因子：Series(index=all_dates, values=float)，高值=风险高/应保守
-    """
-    # 确保所有价格数据对齐到 all_dates
-    if 'TLT' not in prices:
-        return pd.Series(index=all_dates, data=0.0)
-    
-    tlt_close = prices['TLT']['close'].reindex(all_dates)
-    
-    # 计算 TLT 的多时间窗口动量
-    # 短期动量（5 日）- 捕捉近期变化
-    tlt_mom_short = tlt_close.pct_change(5).shift(1)
-    
-    # 中期动量（20 日）- 捕捉趋势方向
-    tlt_mom_mid = tlt_close.pct_change(20).shift(1)
-    
-    # 动量加速度 - 动量的变化率
-    tlt_mom_accel = tlt_mom_short.diff(5).shift(1)
-    
-    # 标准化各信号（使用滚动标准化避免前视）
-    def rolling_zscore(series, window=60):
-        rolling_mean = series.rolling(window=window, min_periods=20).mean()
-        rolling_std = series.rolling(window=window, min_periods=20).std()
-        return (series - rolling_mean) / (rolling_std + 1e-8)
-    
-    tlt_mom_short_z = rolling_zscore(tlt_mom_short)
-    tlt_mom_mid_z = rolling_zscore(tlt_mom_mid)
-    tlt_mom_accel_z = rolling_zscore(tlt_mom_accel)
-    
-    # 组合信号：TLT 走强（正动量）= 风险规避信号 = 高 regime 值
-    # 权重分配：中期动量为主，短期动量和加速度为确认
-    regime_signal = (
-        0.5 * tlt_mom_mid_z + 
-        0.3 * tlt_mom_short_z + 
-        0.2 * tlt_mom_accel_z
-    )
-    
-    # 平滑信号以减少噪音
-    regime_signal_smooth = regime_signal.rolling(window=5, min_periods=1).mean()
-    
-    # 确保输出对齐所有日期
-    result = regime_signal_smooth.reindex(all_dates)
-    result = result.fillna(0.0)
-    
-    return result
-
-# ── Factor: evolved_022_yield_curve_regime ──
-"""
-Factor: yield_curve_regime
-Category: regime
-Description: 使用国债曲线动态（SHY vs TLT 相对表现）作为宏观制度信号。曲线趋平（SHY 跑赢 TLT）通常预示经济放缓/流动性收紧，曲线趋陡预示增长乐观。曲线动量变化比绝对曲线水平更能提前捕捉 regime 转换。
-"""
-import pandas as pd
-import numpy as np
-
-def compute_evolved_022_yield_curve_regime(prices, all_dates, assets):
-    """
-    Parameters:
-        prices: dict[str, DataFrame] - key=资产名，value=OHLCV DataFrame
-        all_dates: DatetimeIndex - 所有交易日（已排序）
-        assets: list[str] - 要计算的资产列表
-    Returns:
-        Series(index=all_dates, values=float) - 高值=风险高/应保守
-    """
-    # Check if SHY and TLT are available
-    if 'SHY' not in prices or 'TLT' not in prices:
-        return pd.Series(0.0, index=all_dates)
-    
-    # Reindex to ensure consistent dates
-    shy_close = prices['SHY']['close'].reindex(all_dates)
-    tlt_close = prices['TLT']['close'].reindex(all_dates)
-    
-    # Calculate returns over medium-term window (1 month ~ 21 days)
-    shy_ret = shy_close.pct_change(21)
-    tlt_ret = tlt_close.pct_change(21)
-    
-    # Curve spread: SHY outperformance vs TLT (positive = flattening)
-    # SHY up / TLT down = flight to safety / liquidity preference = risk signal
-    curve_spread = shy_ret - tlt_ret
-    
-    # Momentum of curve spread (acceleration of flattening/steepening)
-    # Accelerating flattening = increasing risk concern
-    curve_momentum = curve_spread - curve_spread.shift(21)
-    
-    # Normalize by rolling std for stability
-    curve_std = curve_momentum.rolling(63).std()
-    curve_signal = curve_momentum / curve_std.replace(0, np.nan)
-    
-    # Shift to avoid look-ahead bias
-    signal = curve_signal.shift(1)
-    
-    # Fill NaN with 0 (neutral regime)
-    signal = signal.fillna(0)
-    
-    return signal
-
-# ── Factor: evolved_044_evolved_043_defensive_vol_rati ──
-"""
-Factor: evolved_043_defensive_vol_ratio_regime
-Category: regime
-Description: 衡量防御型资产内部波动率比率（TLT vol / GLD vol）作为宏观风险类型信号。比率上升表明通缩/增长担忧主导，比率下降表明通胀/货币担忧主导。
-"""
-import pandas as pd
-import numpy as np
-
-def compute_evolved_044_evolved_043_defensive_vol_rati(prices, all_dates, assets):
-    """
-    Parameters:
-        prices: dict[str, DataFrame] - key=资产名，value=OHLCV DataFrame
-        all_dates: DatetimeIndex - 所有交易日（已排序）
-        assets: list[str] - 要计算的资产列表
-    Returns:
-        regime 因子：Series(index=all_dates, values=float)，高值=风险高/应保守
-    """
-    # 获取防御型资产价格
-    tlt_prices = prices.get('TLT', None)
-    gld_prices = prices.get('GLD', None)
-    
-    # 如果缺少任一防御资产，返回中性信号
-    if tlt_prices is None or gld_prices is None:
-        return pd.Series(0.0, index=all_dates)
-    
-    # 对齐日期
-    tlt_close = tlt_prices['close'].reindex(all_dates)
-    gld_close = gld_prices['close'].reindex(all_dates)
-    
-    # 计算对数收益率
-    tlt_ret = np.log(tlt_close / tlt_close.shift(1))
-    gld_ret = np.log(gld_close / gld_close.shift(1))
-    
-    # 计算滚动波动率（21 日，约 1 个月）
-    tlt_vol = tlt_ret.rolling(window=21, min_periods=10).std() * np.sqrt(252)
-    gld_vol = gld_ret.rolling(window=21, min_periods=10).std() * np.sqrt(252)
-    
-    # 计算波动率比率（TLT / GLD）
-    vol_ratio = tlt_vol / gld_vol.replace(0, np.nan)
-    
-    # 处理极端值和缺失值
-    vol_ratio = vol_ratio.replace([np.inf, -np.inf], np.nan)
-    vol_ratio = vol_ratio.fillna(vol_ratio.expanding().mean())
-    
-    # 标准化为 z-score（使用滚动窗口避免前视）
-    vol_ratio_mean = vol_ratio.rolling(window=63, min_periods=21).mean()
-    vol_ratio_std = vol_ratio.rolling(window=63, min_periods=21).std()
-    vol_ratio_zscore = (vol_ratio - vol_ratio_mean) / vol_ratio_std.replace(0, np.nan)
-    
-    # 前视偏差修复：所有指标必须 shift(1)
-    signal = vol_ratio_zscore.shift(1)
-    
-    # 填充早期缺失值
-    signal = signal.fillna(0.0)
-    
-    # 限制极端值（避免单个异常值主导）
-    signal = signal.clip(-3, 3)
-    
-    return signal
-
-# ── Factor: evolved_054_range_expansion_momentum ──
-"""
-Factor: range_expansion_momentum
-Category: offensive
-Description: 捕捉交易区间压缩后的扩张信号——区间扩张表明机构活动增加，往往先于持续性方向突破，与基于收益率的波动率因子正交（区间可以宽但收盘接近，或区间窄但跳空），提供"能量积蓄"的独立信息。
-"""
-import pandas as pd
-import numpy as np
-
-def compute_evolved_054_range_expansion_momentum(prices, all_dates, assets):
-    """
-    Parameters:
-        prices: dict[str, DataFrame] - key=资产名，value=OHLCV DataFrame
-        all_dates: DatetimeIndex - 所有交易日（已排序）
-        assets: list[str] - 要计算的资产列表
-    Returns:
-        DataFrame(index=all_dates, columns=assets, values=float scores)
-    """
-    scores = pd.DataFrame(index=all_dates, columns=assets, dtype=float)
-    
-    for asset in assets:
-        if asset not in prices:
-            scores[asset] = np.nan
-            continue
-        
-        df = prices[asset].reindex(all_dates)
-        high = df['high']
-        low = df['low']
-        close = df['close']
-        
-        # 交易区间（高 - 低）
-        tr = high - low
-        
-        # 区间相对扩张度：当前区间 / 20 日均区间
-        # 使用 min_periods=10 确保有足够数据
-        tr_ma = tr.rolling(20, min_periods=10).mean()
-        tr_ratio = tr / tr_ma
-        
-        # 动量成分（20 日收益率）
-        momentum = close.pct_change(20)
-        
-        # 组合：区间扩张 × 动量方向
-        # 区间扩张 + 正动量 = 高进攻分数（突破向上）
-        # 区间扩张 + 负动量 = 低进攻分数（突破向下）
-        # 区间压缩 = 低分数（方向不明）
-        score = momentum.shift(1) * tr_ratio.shift(1)
-        
-        scores[asset] = score
-    
-    return scores
-
 
 # ════════════════════════════════════════════
 #  组合器 + 信号生成
@@ -730,19 +507,15 @@ def generate_signals(prices):
     off_evolved_020_offensive_trend_consistency = compute_evolved_020_offensive_trend_consistency(prices, all_dates, OFFENSIVE)
     regime_evolved_036_correlation_velocity_regime = compute_evolved_036_correlation_velocity_regime(prices, all_dates, OFFENSIVE)
     regime_evolved_053_defensive_leadership_persisten = compute_evolved_053_defensive_leadership_persisten(prices, all_dates, OFFENSIVE)
-    regime_evolved_020_cross_asset_tlt_leading_signal = compute_evolved_020_cross_asset_tlt_leading_signal(prices, all_dates, OFFENSIVE)
-    regime_evolved_022_yield_curve_regime = compute_evolved_022_yield_curve_regime(prices, all_dates, OFFENSIVE)
-    regime_evolved_044_evolved_043_defensive_vol_rati = compute_evolved_044_evolved_043_defensive_vol_rati(prices, all_dates, OFFENSIVE)
-    off_evolved_054_range_expansion_momentum = compute_evolved_054_range_expansion_momentum(prices, all_dates, OFFENSIVE)
 
     # 组合进攻型评分
-    off_score = off_base_offensive_score * 0.3333 + off_evolved_020_offensive_trend_consistency * 0.3333 + off_evolved_054_range_expansion_momentum * 0.3333
+    off_score = off_base_offensive_score * 0.5000 + off_evolved_020_offensive_trend_consistency * 0.5000
 
     # 组合防御型评分
     def_score = def_base_defensive_score * 1.0000
 
     # 市场 regime（0=正常, 1=高风险）
-    regime = (regime_base_market_regime + regime_evolved_015_regime_momentum_exhaustion + regime_evolved_036_correlation_velocity_regime + regime_evolved_053_defensive_leadership_persisten + regime_evolved_020_cross_asset_tlt_leading_signal + regime_evolved_022_yield_curve_regime + regime_evolved_044_evolved_043_defensive_vol_rati) / 7
+    regime = (regime_base_market_regime + regime_evolved_015_regime_momentum_exhaustion + regime_evolved_036_correlation_velocity_regime + regime_evolved_053_defensive_leadership_persisten) / 4
 
     # 计算原始动量（用于 SPY 对比）
     momentums = {}
