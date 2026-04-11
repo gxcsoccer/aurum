@@ -20,6 +20,12 @@ universe:
 cash_asset: "SHY"
 benchmark: "SPY"
 
+# 执行层现金替代：策略信号输出 SHY 时，实际交易应买入 SGOV（iShares 0-3 Month Treasury Bond ETF）
+# 原因：SGOV 年化收益更高（2.9% vs 1.5%）、波动率低 8 倍（0.24% vs 1.83%）、回撤几乎为零（-0.03% vs -5.71%）
+# 但 SGOV 上市于 2020-06，无法用于 2008+ 回测，因此策略层仍使用 SHY 的价格数据计算动量信号
+# 映射关系：SHY（策略信号）→ SGOV（实际执行）
+execution_cash_substitute: "SGOV"
+
 # 评估期
 eval_start: "2008-01-01"
 eval_end: "2024-12-31"

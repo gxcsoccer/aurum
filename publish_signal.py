@@ -1,10 +1,16 @@
 """
 计算当月策略信号并发布到 Supabase，供 Volta 读取执行。
 
+执行层现金替代：策略信号中的 SHY 会被自动映射为 SGOV（见 config.yaml 中的
+execution_cash_substitute 配置）。原因是 SGOV（0-3月国债）比 SHY（1-3年国债）
+收益更高、波动更低，是更优的现金停泊工具。策略计算层仍使用 SHY 价格数据，
+因为 SGOV 上市于 2020-06，缺乏 2008+ 历史数据用于回测。
+
 用法：
-  python publish_signal.py                    # 计算并发布
+  python publish_signal.py                    # 计算并发布（SHY→SGOV）
   python publish_signal.py --dry-run          # 只计算，不发布
   python publish_signal.py --month 2025-08    # 指定月份
+  python publish_signal.py --no-substitute    # 不做 SHY→SGOV 替换
 """
 import argparse
 import os
@@ -97,10 +103,34 @@ def publish_to_supabase(signal: dict, month: str) -> None:
     print(f"  已发布到 Supabase: {month} -> {signal['target_asset']}")
 
 
+def apply_execution_substitute(signal: dict, config: dict) -> tuple[dict, str | None]:
+    """
+    执行层现金替代：将策略信号中的 cash_asset 替换为 execution_cash_substitute。
+
+    策略计算使用 SHY 的历史价格数据（2008+ 回测需要），但实际交易时
+    SGOV 是更优的现金停泊工具（收益更高、波动更低、回撤更小）。
+
+    Returns:
+        (modified_signal, original_asset) - original_asset 为 None 表示未替换
+    """
+    substitute = config.get("execution_cash_substitute")
+    cash_asset = config.get("cash_asset", "SHY")
+
+    if not substitute or signal["target_asset"] != cash_asset:
+        return signal, None
+
+    original = signal["target_asset"]
+    signal = dict(signal)
+    signal["target_asset"] = substitute
+    return signal, original
+
+
 def main():
     parser = argparse.ArgumentParser(description="Publish Aurum signal to Supabase")
     parser.add_argument("--dry-run", action="store_true", help="Only compute, don't publish")
     parser.add_argument("--month", type=str, default=None, help="Target month (YYYY-MM)")
+    parser.add_argument("--no-substitute", action="store_true",
+                        help="Disable SHY->SGOV execution substitution")
     args = parser.parse_args()
 
     with open("config.yaml") as f:
@@ -113,10 +143,17 @@ def main():
 
     signal = get_current_signal(config)
 
+    # 执行层现金替代（SHY → SGOV）
+    original_asset = None
+    if not args.no_substitute:
+        signal, original_asset = apply_execution_substitute(signal, config)
+
     print(f"\n{'='*50}")
     print(f"  {month} Signal")
     print(f"{'='*50}")
     print(f"  Target: {signal['target_asset']}")
+    if original_asset:
+        print(f"  (策略信号: {original_asset} → 执行替代: {signal['target_asset']})")
     print(f"  As of:  {signal['as_of_date']}")
     print(f"  Momentum (12M reference):")
     for name, score in sorted(signal["momentum_scores"].items(), key=lambda x: -x[1]):
