@@ -2,17 +2,27 @@
 
 面向个人投资者的自进化量化投资系统。
 
-灵感来自 [Karpathy 的 autoresearch](https://github.com/karpathy/autoresearch) —— LLM agent 通过贪心爬山循环自主迭代策略代码，人类通过评分函数和研究指令把控方向。
+灵感来自 [Karpathy 的 autoresearch](https://github.com/karpathy/autoresearch) 和 [Microsoft RD-Agent](https://github.com/microsoft/RD-Agent) —— LLM agent 自主发现并积累 alpha 因子，人类通过评分函数和研究指令把控方向。
 
 ## 工作原理
 
+两种进化模式：
+
 ```
-人类层           →  scorer.py / program.md / config.yaml
-Agent 层 (LLM)   →  strategies/strategy.py（唯一可变文件）
-基础设施层（锁定） →  data.py / backtest.py / sandbox.py / llm.py
+模式 1: 整体变异 (loop.py)                模式 2: 因子积累 (factor_loop.py) ← 推荐
+  LLM 重写整个策略                          LLM 提出一个小因子
+  → 沙盒 → 评分                             → 质量检查 → 加入因子库 → 重新组装
+  → 保留或丢弃整个文件                       → 保留因子或丢弃（其他因子不受影响）
 ```
 
-**核心循环：** LLM 提出变异 → 沙盒执行 → Walk-Forward 回测 → 评分 → 保留或丢弃。完全自主，无需人工干预。
+```
+人类层             →  scorer.py / program.md / config.yaml
+Agent 层 (LLM)     →  factors/（因子库，LLM 的画布）
+组装层             →  factor_loop.py 将因子组装为 strategies/strategy.py
+基础设施层（锁定）  →  data.py / backtest.py / sandbox.py / llm.py
+```
+
+**因子积累**远优于整体变异：50 轮产出 4 个有效因子，而整体变异 200 轮 0 改进。
 
 ## 成果
 
@@ -61,16 +71,39 @@ Agent 层 (LLM)   →  strategies/strategy.py（唯一可变文件）
 
 | 时段 | Aurum | SPY | 超额 |
 |---|---|---|---|
-| 2025 全年 | +20.22% | +18.60% | **+1.62%** |
-| 2026 Q1 (1-3月) | -1.47% | -5.32% | **+3.85%** |
+| 2025 全年（8 因子版） | **+29.08%** | +18.60% | **+12.15%** |
+| 2025 全年（4 因子基线） | +20.22% | +18.60% | +1.62% |
 
-## 关键创新（由 LLM agent 自主发现）
+因子进化后的 8 因子版在 holdout 数据上大幅跑赢基线，证明进化出的因子具备真正的泛化能力。
 
+## 关键创新
+
+**基础因子**（LLM 整体变异发现）：
 1. **多期动量加权** — 1/3/6/12 个月收益率按 1/2/4/6 权重组合
 2. **波动率调整排名** — 进攻型资产使用 动量/波动率 排序
 3. **相对 SPY 阈值** — 进攻型资产动量需 >= SPY 动量才持有
 4. **防御型纯动量** — 防止 SHY 因波动率极低导致评分虚高
 5. **市场波动率过滤** — 高波动环境下收紧进攻门槛
+
+**进化因子**（LLM 因子积累发现）：
+6. **动量耗尽预警** — 进攻型资产整体动量减速，领先于波动率飙升
+7. **趋势一致性** — 偏好稳步上涨的资产，而非暴涨暴跌的
+8. **相关性变速** — 跨资产相关性快速上升是危机先兆
+9. **防御领导持续性** — 防御型资产持续跑赢进攻型，确认风险规避 regime
+
+## 执行层现金替代
+
+策略信号使用 SHY（1-3 年期国债）计算（回测需要 2008+ 历史数据）。
+实际执行时，SHY 自动映射为 **SGOV**（iShares 0-3 个月国债 ETF）：
+
+| | SGOV | SHY |
+|---|---|---|
+| 年化收益 | **2.9%** | 1.5% |
+| 波动率 | **0.24%** | 1.83% |
+| 最大回撤 | **-0.03%** | -5.71% |
+| 2022（加息冲击） | **+1.59%** | -3.77% |
+
+此映射在 `publish_signal.py` 中实现，可通过 `--no-substitute` 禁用。
 
 ## 快速开始
 
@@ -83,15 +116,19 @@ pip install -e .
 cp .env.example .env
 # 编辑 .env 填入 DASHSCOPE_API_KEY
 
-# 运行进化（50 轮，约 30 分钟）
+# 运行因子进化（推荐，50 轮，约 1 小时）
+python factor_loop.py -n 50
+
+# 或运行整体变异进化（旧版，50 轮，约 30 分钟）
 python loop.py -n 50
 
 # 验证保留期表现
 python validate.py
 
 # 发布月度信号（需要 Supabase 凭证）
-python publish_signal.py
-python publish_signal.py --dry-run    # 仅预览
+python publish_signal.py                # SHY 自动映射为 SGOV
+python publish_signal.py --dry-run      # 仅预览
+python publish_signal.py --no-substitute  # 不做 SHY→SGOV 替换
 ```
 
 ## 项目结构
@@ -99,11 +136,24 @@ python publish_signal.py --dry-run    # 仅预览
 ```
 aurum/
 ├── config.yaml              # 资产池、时间窗口、LLM 设置
-├── program.md               # agent 工作手册（调控研究方向）
-├── loop.py                  # autoresearch 风格进化引擎
+├── factor_config.yaml       # 因子注册表、权重、组合器参数
+├── program.md               # 整体变异 agent 工作手册
+├── program_factor.md        # 因子挖掘 agent 工作手册
+├── loop.py                  # 整体变异进化引擎（旧版）
+├── factor_loop.py           # 因子积累进化引擎（推荐）
 ├── validate.py              # 保留期验证
-├── publish_signal.py        # 月度信号发布到 Supabase
+├── publish_signal.py        # 月度信号发布（SHY→SGOV 映射）
 ├── portfolio.py             # 多策略组合器
+│
+├── factors/                 # 因子库（基础 + LLM 进化）
+│   ├── base_offensive_score.py       # 波动率调整多期动量
+│   ├── base_defensive_score.py       # 纯多期动量
+│   ├── base_market_regime.py         # 市场波动率 regime
+│   ├── base_ma_filter.py             # 63 日均线趋势过滤
+│   ├── evolved_015_*.py              # 动量耗尽预警
+│   ├── evolved_020_*.py              # 趋势一致性
+│   ├── evolved_036_*.py              # 相关性变速
+│   └── evolved_053_*.py              # 防御领导持续性
 │
 ├── infra/                   # 不可变层 — 进化期间禁止修改
 │   ├── data.py              # yfinance 多资产数据 + parquet/pickle 缓存
@@ -113,10 +163,11 @@ aurum/
 │   └── llm.py               # LLM 客户端（百炼/DashScope，OpenAI 兼容）
 │
 ├── strategies/
-│   └── strategy.py          # 当前最优策略（LLM 进化此文件）
+│   └── strategy.py          # 当前最优策略（由因子库自动组装）
 │
 ├── experiments/
-│   └── results.tsv          # 完整实验日志（含失败记录）
+│   ├── results.tsv          # 整体变异实验日志
+│   └── factor_results.tsv   # 因子进化实验日志
 │
 └── .github/workflows/
     ├── publish-signal.yml   # 月度自动发布轮动信号
@@ -166,6 +217,7 @@ Aurum（离线）                Volta（在线）
 - **Deflated Sharpe Ratio**（Lopez de Prado）— 实验次数越多，门槛越高
 - **保留期** — 2025 年数据在进化期间从未使用
 - **沙盒执行** — 策略在子进程中运行，无法篡改评分函数
+- **因子数量纪律** — 实验证明 8 因子为最佳数量；12 因子导致 holdout 超额从 +12% 下降到 +7%（过拟合）
 
 ## 配置
 

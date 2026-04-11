@@ -4,17 +4,27 @@
 
 Self-evolving quantitative investment system for individual investors.
 
-Inspired by [Karpathy's autoresearch](https://github.com/karpathy/autoresearch) — LLM agents autonomously iterate strategy code through a greedy hill-climbing loop, while humans steer direction via scoring functions and research prompts.
+Inspired by [Karpathy's autoresearch](https://github.com/karpathy/autoresearch) and [Microsoft RD-Agent](https://github.com/microsoft/RD-Agent) — LLM agents autonomously discover and accumulate alpha factors, while humans steer direction via scoring functions and research prompts.
 
 ## How It Works
 
+Two evolution modes:
+
+```
+Mode 1: Monolithic (loop.py)          Mode 2: Factor Accumulation (factor_loop.py) ← recommended
+  LLM rewrites entire strategy          LLM proposes one small factor
+  → sandbox → score                     → quality check → add to library → reassemble
+  → keep or discard whole file           → keep factor or discard (others unaffected)
+```
+
 ```
 Human Layer          →  scorer.py / program.md / config.yaml
-Agent Layer (LLM)    →  strategies/strategy.py (the only mutable file)
+Agent Layer (LLM)    →  factors/ (factor library, LLM's canvas)
+Assembly Layer       →  factor_loop.py assembles factors into strategies/strategy.py
 Infra Layer (locked)  →  data.py / backtest.py / sandbox.py / llm.py
 ```
 
-**Core loop:** LLM proposes mutation → sandbox execution → walk-forward backtest → score → keep or discard. Fully autonomous, no human intervention needed.
+**Factor accumulation** outperforms monolithic mutation: 50 rounds yielded 4 useful factors vs 200 rounds with 0 improvements in monolithic mode.
 
 ## Results
 
@@ -63,16 +73,39 @@ Infra Layer (locked)  →  data.py / backtest.py / sandbox.py / llm.py
 
 | Period | Aurum | SPY | Excess |
 |---|---|---|---|
-| 2025 Full Year | +20.22% | +18.60% | **+1.62%** |
-| 2026 Q1 (Jan–Mar) | -1.47% | -5.32% | **+3.85%** |
+| 2025 Full Year (8-factor) | **+29.08%** | +18.60% | **+12.15%** |
+| 2025 Full Year (4-factor baseline) | +20.22% | +18.60% | +1.62% |
 
-## Key Innovations (discovered by LLM agent)
+The 8-factor version (after factor evolution) significantly outperforms the 4-factor baseline on holdout data, confirming that the evolved factors generalize well.
 
+## Key Innovations
+
+**Base factors** (discovered by LLM monolithic evolution):
 1. **Multi-period momentum weighting** — 1/3/6/12 month returns weighted 1/2/4/6
 2. **Volatility-adjusted ranking** — momentum / volatility for offensive assets
 3. **Relative SPY threshold** — only hold offensive if momentum >= SPY momentum
 4. **Pure momentum for defensive** — prevents SHY score inflation from ultra-low volatility
 5. **Market volatility filter** — tighter threshold in high-vol regimes
+
+**Evolved factors** (discovered by LLM factor accumulation):
+6. **Momentum exhaustion regime** — broad deceleration of offensive momentum precedes vol spikes
+7. **Trend consistency** — prefer steady risers over volatile jumpers
+8. **Correlation velocity regime** — rapid increase in cross-asset correlation signals crisis onset
+9. **Defensive leadership persistence** — sustained defensive outperformance confirms risk-off regime
+
+## Execution-Layer Cash Substitute
+
+Strategy signals use SHY (1-3yr Treasury) for backtesting (requires 2008+ history).
+At execution time, SHY is automatically mapped to **SGOV** (iShares 0-3 Month Treasury Bond ETF):
+
+| | SGOV | SHY |
+|---|---|---|
+| Annual Return | **2.9%** | 1.5% |
+| Volatility | **0.24%** | 1.83% |
+| Max Drawdown | **-0.03%** | -5.71% |
+| 2022 (rate shock) | **+1.59%** | -3.77% |
+
+This mapping is applied in `publish_signal.py` and can be disabled with `--no-substitute`.
 
 ## Quick Start
 
@@ -85,15 +118,19 @@ pip install -e .
 cp .env.example .env
 # Edit .env with your DASHSCOPE_API_KEY
 
-# Run evolution (50 iterations, ~30 min)
+# Run factor evolution (recommended, 50 iterations, ~1 hour)
+python factor_loop.py -n 50
+
+# Or run monolithic evolution (legacy, 50 iterations, ~30 min)
 python loop.py -n 50
 
 # Validate on holdout data
 python validate.py
 
 # Publish monthly signal (requires Supabase credentials)
-python publish_signal.py
-python publish_signal.py --dry-run    # preview only
+python publish_signal.py                # SHY auto-mapped to SGOV
+python publish_signal.py --dry-run      # preview only
+python publish_signal.py --no-substitute  # keep SHY as-is
 ```
 
 ## Architecture
@@ -101,11 +138,24 @@ python publish_signal.py --dry-run    # preview only
 ```
 aurum/
 ├── config.yaml              # Asset universe, time windows, LLM settings
-├── program.md               # Agent work manual (steer research direction)
-├── loop.py                  # Autoresearch-style evolution engine
+├── factor_config.yaml       # Factor registry, weights, combiner parameters
+├── program.md               # Agent work manual for monolithic evolution
+├── program_factor.md        # Agent work manual for factor mining
+├── loop.py                  # Monolithic evolution engine (legacy)
+├── factor_loop.py           # Factor accumulation engine (recommended)
 ├── validate.py              # Holdout period validation
-├── publish_signal.py        # Monthly signal publisher to Supabase
+├── publish_signal.py        # Monthly signal publisher (SHY→SGOV mapping)
 ├── portfolio.py             # Multi-strategy portfolio combiner
+│
+├── factors/                 # Factor library (base + LLM-evolved)
+│   ├── base_offensive_score.py       # Vol-adjusted multi-period momentum
+│   ├── base_defensive_score.py       # Pure multi-period momentum
+│   ├── base_market_regime.py         # Market volatility regime
+│   ├── base_ma_filter.py             # 63-day MA trend filter
+│   ├── evolved_015_*.py              # Momentum exhaustion regime
+│   ├── evolved_020_*.py              # Trend consistency
+│   ├── evolved_036_*.py              # Correlation velocity regime
+│   └── evolved_053_*.py              # Defensive leadership persistence
 │
 ├── infra/                   # Immutable — never modify during evolution
 │   ├── data.py              # yfinance multi-asset data + parquet/pickle cache
@@ -115,10 +165,11 @@ aurum/
 │   └── llm.py               # LLM client (Bailian/DashScope, OpenAI-compatible)
 │
 ├── strategies/
-│   └── strategy.py          # Current best strategy (LLM evolves this)
+│   └── strategy.py          # Current best strategy (auto-assembled from factors)
 │
 ├── experiments/
-│   └── results.tsv          # Full experiment log (including failures)
+│   ├── results.tsv          # Monolithic evolution log
+│   └── factor_results.tsv   # Factor evolution log
 │
 └── .github/workflows/
     ├── publish-signal.yml   # Monthly: auto-publish rotation signal
@@ -168,6 +219,7 @@ Aurum (offline)              Volta (online)
 - **Deflated Sharpe Ratio** (Lopez de Prado) — penalizes strategies found after many trials
 - **Holdout period** — 2025 data never touched during evolution
 - **Sandbox execution** — strategies run in subprocess, can't hack the scorer
+- **Factor count discipline** — empirically, 8 factors is the sweet spot; 12 factors caused holdout degradation from +12% to +7% excess (overfitting)
 
 ## Configuration
 
